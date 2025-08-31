@@ -280,15 +280,12 @@ export function FamilyPointsApp() {
   const [offlineQueue, setOfflineQueue] = useState<OfflineTransaction[]>([])
   const [streakCount, setStreakCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [supabaseClient, setSupabaseClient] = useState<any>(null)
+  const [clientError, setClientError] = useState<string | null>(null)
 
   const touchStartX = useRef<number>(0)
   const touchStartY = useRef<number>(0)
   const [swipeDirection, setSwipeDirection] = useState<string>("")
-
-  const supabase = createClient()
-
-  const progressPercentage = useMemo(() => Math.min((weeklyPoints / 75) * 100, 100), [weeklyPoints])
-  const chfEarned = useMemo(() => Math.min(Math.floor(weeklyPoints / 15), 5), [weeklyPoints])
 
   const withErrorHandling = useCallback(async (operation: () => Promise<void>, errorMessage: string) => {
     try {
@@ -325,11 +322,26 @@ export function FamilyPointsApp() {
     }
   }, [])
 
-  // ... existing code for all the other functions ...
+  useEffect(() => {
+    try {
+      console.log("[v0] Creating Supabase client...")
+      const client = createClient()
+      setSupabaseClient(client)
+      console.log("[v0] Supabase client created successfully")
+    } catch (error) {
+      console.error("[v0] Failed to create Supabase client:", error)
+      setClientError("Failed to connect to database. Please check your connection.")
+    }
+  }, [])
 
   const loadMembers = async () => {
+    if (!supabaseClient) {
+      console.log("[v0] Supabase client not ready yet")
+      return
+    }
+
     await withErrorHandling(async () => {
-      const { data, error } = await supabase.from("family_members").select("*").order("name")
+      const { data, error } = await supabaseClient.from("family_members").select("*").order("name")
 
       if (error) {
         throw error
@@ -341,6 +353,11 @@ export function FamilyPointsApp() {
   }
 
   const loadMemberData = async (memberId: string) => {
+    if (!supabaseClient) {
+      console.log("[v0] Supabase client not ready for loadMemberData")
+      return
+    }
+
     setLoading(true)
 
     await withErrorHandling(async () => {
@@ -353,7 +370,7 @@ export function FamilyPointsApp() {
 
       console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
 
-      const { data: weeklyData } = await supabase
+      const { data: weeklyData } = await supabaseClient
         .from("points_transactions")
         .select("points")
         .eq("member_id", memberId)
@@ -366,7 +383,7 @@ export function FamilyPointsApp() {
       const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
       startOfMonth.setHours(0, 0, 0, 0)
 
-      const { data: monthlyData } = await supabase
+      const { data: monthlyData } = await supabaseClient
         .from("points_transactions")
         .select("points")
         .eq("member_id", memberId)
@@ -376,7 +393,7 @@ export function FamilyPointsApp() {
       setMonthlyPoints(Math.max(0, monthlyTotal))
 
       const today = new Date().toISOString().split("T")[0]
-      const { data: progressData } = await supabase
+      const { data: progressData } = await supabaseClient
         .from("daily_progress")
         .select("*")
         .eq("member_id", memberId)
@@ -385,7 +402,7 @@ export function FamilyPointsApp() {
 
       setTodayProgress(progressData)
 
-      const { data: transactionsData } = await supabase
+      const { data: transactionsData } = await supabaseClient
         .from("points_transactions")
         .select("*")
         .eq("member_id", memberId)
@@ -409,37 +426,6 @@ export function FamilyPointsApp() {
     setLoading(false)
   }
 
-  // ... existing code for other functions ...
-
-  useEffect(() => {
-    loadMembers()
-    const handleOnline = () => {
-      setIsOnline(true)
-      syncOfflineQueue()
-    }
-    const handleOffline = () => setIsOnline(false)
-
-    window.addEventListener("online", handleOnline)
-    window.addEventListener("offline", handleOffline)
-
-    const savedQueue = localStorage.getItem("familyPointsOfflineQueue")
-    if (savedQueue) {
-      setOfflineQueue(JSON.parse(savedQueue))
-    }
-
-    return () => {
-      window.removeEventListener("online", handleOnline)
-      window.removeEventListener("offline", handleOffline)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (selectedMember) {
-      loadMemberData(selectedMember.id)
-      calculateStreak(selectedMember.id)
-    }
-  }, [selectedMember])
-
   const syncOfflineQueue = async () => {
     if (offlineQueue.length === 0) return
 
@@ -447,7 +433,7 @@ export function FamilyPointsApp() {
 
     for (const transaction of offlineQueue) {
       try {
-        const { error } = await supabase.from("points_transactions").insert({
+        const { error } = await supabaseClient.from("points_transactions").insert({
           member_id: transaction.member_id,
           points: transaction.points,
           reason: transaction.reason,
@@ -474,7 +460,7 @@ export function FamilyPointsApp() {
 
   const calculateStreak = async (memberId: string) => {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabaseClient
         .from("daily_progress")
         .select("date, daily_points_awarded")
         .eq("member_id", memberId)
@@ -528,7 +514,7 @@ export function FamilyPointsApp() {
     }
 
     try {
-      const { error } = await supabase.from("points_transactions").insert({
+      const { error } = await supabaseClient.from("points_transactions").insert({
         member_id: transaction.member_id,
         points: transaction.points,
         reason: transaction.reason,
@@ -564,7 +550,7 @@ export function FamilyPointsApp() {
     if (!success && isOnline) return
 
     if (isOnline) {
-      const { error: progressError } = await supabase.from("daily_progress").upsert({
+      const { error: progressError } = await supabaseClient.from("daily_progress").upsert({
         member_id: selectedMember.id,
         date: today,
         daily_points_awarded: true,
@@ -607,7 +593,7 @@ export function FamilyPointsApp() {
     if (!success && isOnline) return
 
     if (isOnline) {
-      await supabase.from("daily_progress").upsert({
+      await supabaseClient.from("daily_progress").upsert({
         member_id: selectedMember.id,
         date: today,
         daily_points_awarded: todayProgress.daily_points_awarded,
@@ -667,8 +653,8 @@ export function FamilyPointsApp() {
     setLoading(true)
 
     try {
-      await supabase.from("points_transactions").delete().eq("member_id", selectedMember.id)
-      await supabase.from("daily_progress").delete().eq("member_id", selectedMember.id)
+      await supabaseClient.from("points_transactions").delete().eq("member_id", selectedMember.id)
+      await supabaseClient.from("daily_progress").delete().eq("member_id", selectedMember.id)
       await loadMemberData(selectedMember.id)
 
       console.log("[v0] Successfully reset all data for", selectedMember.name)
@@ -677,6 +663,70 @@ export function FamilyPointsApp() {
     } finally {
       setLoading(false)
     }
+  }
+
+  useEffect(() => {
+    if (supabaseClient) {
+      loadMembers()
+    }
+    const handleOnline = () => {
+      setIsOnline(true)
+      syncOfflineQueue()
+    }
+    const handleOffline = () => setIsOnline(false)
+
+    window.addEventListener("online", handleOnline)
+    window.addEventListener("offline", handleOffline)
+
+    const savedQueue = localStorage.getItem("familyPointsOfflineQueue")
+    if (savedQueue) {
+      setOfflineQueue(JSON.parse(savedQueue))
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline)
+      window.removeEventListener("offline", handleOffline)
+    }
+  }, [supabaseClient])
+
+  useEffect(() => {
+    if (selectedMember && supabaseClient) {
+      loadMemberData(selectedMember.id)
+      calculateStreak(selectedMember.id)
+    }
+  }, [selectedMember, supabaseClient])
+
+  if (clientError) {
+    return (
+      <ErrorBoundary>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
+          <div className="container mx-auto px-6 lg:px-8 max-w-4xl">
+            <Card className="shadow-lg border-red-200">
+              <CardContent className="text-center py-8">
+                <p className="text-red-600 mb-4">{clientError}</p>
+                <Button onClick={() => window.location.reload()}>Retry</Button>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </ErrorBoundary>
+    )
+  }
+
+  if (!supabaseClient) {
+    return (
+      <ErrorBoundary>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
+          <div className="container mx-auto px-6 lg:px-8 max-w-4xl">
+            <Card className="shadow-lg border-blue-200">
+              <CardContent className="text-center py-8">
+                <p className="text-blue-600">Connecting to database...</p>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </ErrorBoundary>
+    )
   }
 
   return (
