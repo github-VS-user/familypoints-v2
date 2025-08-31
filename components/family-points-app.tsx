@@ -1,13 +1,15 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import type React from "react"
+
+import { useState, useEffect, useRef } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Star, Award, BookOpen, Home, Minus, Plus, RotateCcw } from "lucide-react"
+import { Star, Award, BookOpen, Home, Minus, Plus, RotateCcw, Wifi, WifiOff, Flame } from "lucide-react"
 
 interface FamilyMember {
   id: string
@@ -27,6 +29,15 @@ interface DailyProgress {
   date: string
   daily_points_awarded: boolean
   rules_broken: Record<string, boolean>
+}
+
+interface OfflineTransaction {
+  id: string
+  member_id: string
+  points: number
+  reason: string
+  transaction_type: string
+  timestamp: number
 }
 
 const DAILY_RULES = [
@@ -64,88 +75,275 @@ export function FamilyPointsApp() {
   const [todayProgress, setTodayProgress] = useState<DailyProgress | null>(null)
   const [recentTransactions, setRecentTransactions] = useState<PointsTransaction[]>([])
   const [loading, setLoading] = useState(false)
+  const [isOnline, setIsOnline] = useState(true)
+  const [offlineQueue, setOfflineQueue] = useState<OfflineTransaction[]>([])
+  const [streakCount, setStreakCount] = useState(0)
+
+  const touchStartX = useRef<number>(0)
+  const touchStartY = useRef<number>(0)
+  const [swipeDirection, setSwipeDirection] = useState<string>("")
 
   const supabase = createClient()
 
   useEffect(() => {
     loadMembers()
+    const handleOnline = () => {
+      setIsOnline(true)
+      syncOfflineQueue()
+    }
+    const handleOffline = () => setIsOnline(false)
+
+    window.addEventListener("online", handleOnline)
+    window.addEventListener("offline", handleOffline)
+
+    const savedQueue = localStorage.getItem("familyPointsOfflineQueue")
+    if (savedQueue) {
+      setOfflineQueue(JSON.parse(savedQueue))
+    }
+
+    return () => {
+      window.removeEventListener("online", handleOnline)
+      window.removeEventListener("offline", handleOffline)
+    }
   }, [])
 
   useEffect(() => {
     if (selectedMember) {
       loadMemberData(selectedMember.id)
+      calculateStreak(selectedMember.id)
     }
   }, [selectedMember])
 
-  const loadMembers = async () => {
-    const { data, error } = await supabase.from("family_members").select("*").order("name")
+  const syncOfflineQueue = async () => {
+    if (offlineQueue.length === 0) return
 
-    if (error) {
-      console.error("Error loading members:", error)
-      return
+    console.log("[v0] Syncing offline queue:", offlineQueue.length, "transactions")
+
+    for (const transaction of offlineQueue) {
+      try {
+        const { error } = await supabase.from("points_transactions").insert({
+          member_id: transaction.member_id,
+          points: transaction.points,
+          reason: transaction.reason,
+          transaction_type: transaction.transaction_type,
+        })
+
+        if (error) {
+          console.error("[v0] Error syncing transaction:", error)
+          return
+        }
+      } catch (error) {
+        console.error("[v0] Network error syncing transaction:", error)
+        return
+      }
     }
 
-    setMembers(data || [])
+    setOfflineQueue([])
+    localStorage.removeItem("familyPointsOfflineQueue")
+
+    if (selectedMember) {
+      loadMemberData(selectedMember.id)
+    }
+  }
+
+  const calculateStreak = async (memberId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("daily_progress")
+        .select("date, daily_points_awarded")
+        .eq("member_id", memberId)
+        .eq("daily_points_awarded", true)
+        .order("date", { ascending: false })
+        .limit(30)
+
+      if (error || !data) {
+        setStreakCount(0)
+        return
+      }
+
+      let streak = 0
+      const today = new Date()
+
+      for (let i = 0; i < data.length; i++) {
+        const progressDate = new Date(data[i].date)
+        const expectedDate = new Date(today)
+        expectedDate.setDate(today.getDate() - i)
+
+        if (progressDate.toDateString() === expectedDate.toDateString()) {
+          streak++
+        } else {
+          break
+        }
+      }
+
+      setStreakCount(streak)
+    } catch (error) {
+      console.error("[v0] Error calculating streak:", error)
+      setStreakCount(0)
+    }
+  }
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX
+    touchStartY.current = e.touches[0].clientY
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent, action: () => void) => {
+    const touchEndX = e.changedTouches[0].clientX
+    const touchEndY = e.changedTouches[0].clientY
+
+    const deltaX = touchEndX - touchStartX.current
+    const deltaY = touchEndY - touchStartY.current
+
+    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
+      if (deltaX > 0) {
+        setSwipeDirection("right")
+        action()
+      } else {
+        setSwipeDirection("left")
+        action()
+      }
+
+      setTimeout(() => setSwipeDirection(""), 300)
+    }
+  }
+
+  const loadMembers = async () => {
+    try {
+      const { data, error } = await supabase.from("family_members").select("*").order("name")
+
+      if (error) {
+        console.error("Error loading members:", error)
+        return
+      }
+
+      setMembers(data || [])
+    } catch (error) {
+      console.error("[v0] Network error loading members:", error)
+      const savedMembers = localStorage.getItem("familyPointsMembers")
+      if (savedMembers) {
+        setMembers(JSON.parse(savedMembers))
+      }
+    }
   }
 
   const loadMemberData = async (memberId: string) => {
     setLoading(true)
 
-    const now = new Date()
-    const startOfWeek = new Date(now)
-    // Set to Monday of current week (0 = Sunday, 1 = Monday)
-    const dayOfWeek = startOfWeek.getDay()
-    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
-    startOfWeek.setDate(startOfWeek.getDate() + daysToMonday)
-    startOfWeek.setHours(0, 0, 0, 0)
+    try {
+      const now = new Date()
+      const startOfWeek = new Date(now)
+      const dayOfWeek = startOfWeek.getDay()
+      const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+      startOfWeek.setDate(startOfWeek.getDate() + daysToMonday)
+      startOfWeek.setHours(0, 0, 0, 0)
 
-    console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
+      console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
 
-    const { data: weeklyData } = await supabase
-      .from("points_transactions")
-      .select("points")
-      .eq("member_id", memberId)
-      .gte("created_at", startOfWeek.toISOString())
+      const { data: weeklyData } = await supabase
+        .from("points_transactions")
+        .select("points")
+        .eq("member_id", memberId)
+        .gte("created_at", startOfWeek.toISOString())
 
-    const weeklyTotal = weeklyData?.reduce((sum, t) => sum + t.points, 0) || 0
-    console.log("[v0] Weekly points calculated:", weeklyTotal, "from", weeklyData?.length, "transactions")
-    setWeeklyPoints(Math.max(0, weeklyTotal))
+      const weeklyTotal = weeklyData?.reduce((sum, t) => sum + t.points, 0) || 0
+      console.log("[v0] Weekly points calculated:", weeklyTotal, "from", weeklyData?.length, "transactions")
+      setWeeklyPoints(Math.max(0, weeklyTotal))
 
-    // Get current month's points
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    startOfMonth.setHours(0, 0, 0, 0)
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      startOfMonth.setHours(0, 0, 0, 0)
 
-    const { data: monthlyData } = await supabase
-      .from("points_transactions")
-      .select("points")
-      .eq("member_id", memberId)
-      .gte("created_at", startOfMonth.toISOString())
+      const { data: monthlyData } = await supabase
+        .from("points_transactions")
+        .select("points")
+        .eq("member_id", memberId)
+        .gte("created_at", startOfMonth.toISOString())
 
-    const monthlyTotal = monthlyData?.reduce((sum, t) => sum + t.points, 0) || 0
-    setMonthlyPoints(Math.max(0, monthlyTotal))
+      const monthlyTotal = monthlyData?.reduce((sum, t) => sum + t.points, 0) || 0
+      setMonthlyPoints(Math.max(0, monthlyTotal))
 
-    // Get today's progress
-    const today = new Date().toISOString().split("T")[0]
-    const { data: progressData } = await supabase
-      .from("daily_progress")
-      .select("*")
-      .eq("member_id", memberId)
-      .eq("date", today)
-      .single()
+      const today = new Date().toISOString().split("T")[0]
+      const { data: progressData } = await supabase
+        .from("daily_progress")
+        .select("*")
+        .eq("member_id", memberId)
+        .eq("date", today)
+        .single()
 
-    setTodayProgress(progressData)
+      setTodayProgress(progressData)
 
-    // Get recent transactions
-    const { data: transactionsData } = await supabase
-      .from("points_transactions")
-      .select("*")
-      .eq("member_id", memberId)
-      .order("created_at", { ascending: false })
-      .limit(10)
+      const { data: transactionsData } = await supabase
+        .from("points_transactions")
+        .select("*")
+        .eq("member_id", memberId)
+        .order("created_at", { ascending: false })
+        .limit(10)
 
-    setRecentTransactions(transactionsData || [])
+      setRecentTransactions(transactionsData || [])
 
-    setLoading(false)
+      localStorage.setItem(
+        "familyPointsData",
+        JSON.stringify({
+          memberId,
+          weeklyPoints: weeklyTotal,
+          monthlyPoints: monthlyTotal,
+          todayProgress: progressData,
+          recentTransactions: transactionsData || [],
+        }),
+      )
+    } catch (error) {
+      console.error("[v0] Network error loading member data:", error)
+      const savedData = localStorage.getItem("familyPointsData")
+      if (savedData) {
+        const data = JSON.parse(savedData)
+        if (data.memberId === memberId) {
+          setWeeklyPoints(data.weeklyPoints || 0)
+          setMonthlyPoints(data.monthlyPoints || 0)
+          setTodayProgress(data.todayProgress)
+          setRecentTransactions(data.recentTransactions || [])
+        }
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const addTransactionOfflineSupport = async (transaction: Omit<OfflineTransaction, "id" | "timestamp">) => {
+    if (!isOnline) {
+      const offlineTransaction: OfflineTransaction = {
+        ...transaction,
+        id: Date.now().toString(),
+        timestamp: Date.now(),
+      }
+
+      const newQueue = [...offlineQueue, offlineTransaction]
+      setOfflineQueue(newQueue)
+      localStorage.setItem("familyPointsOfflineQueue", JSON.stringify(newQueue))
+
+      setWeeklyPoints((prev) => Math.max(0, prev + transaction.points))
+      setMonthlyPoints((prev) => Math.max(0, prev + transaction.points))
+
+      return true
+    }
+
+    try {
+      const { error } = await supabase.from("points_transactions").insert({
+        member_id: transaction.member_id,
+        points: transaction.points,
+        reason: transaction.reason,
+        transaction_type: transaction.transaction_type,
+      })
+
+      if (error) {
+        console.error("[v0] Error adding transaction:", error)
+        return false
+      }
+
+      return true
+    } catch (error) {
+      console.error("[v0] Network error adding transaction:", error)
+      return false
+    }
   }
 
   const awardDailyPoints = async () => {
@@ -155,32 +353,40 @@ export function FamilyPointsApp() {
 
     console.log("[v0] Awarding daily points for member:", selectedMember.name)
 
-    const { error } = await supabase.from("points_transactions").insert({
+    const success = await addTransactionOfflineSupport({
       member_id: selectedMember.id,
       points: 15,
       reason: "Daily routine completed",
       transaction_type: "daily_award",
     })
 
-    if (error) {
-      console.error("[v0] Error adding daily points:", error)
-      return
+    if (!success && isOnline) return
+
+    if (isOnline) {
+      const { error: progressError } = await supabase.from("daily_progress").upsert({
+        member_id: selectedMember.id,
+        date: today,
+        daily_points_awarded: true,
+        rules_broken: {},
+      })
+
+      if (progressError) {
+        console.error("[v0] Error updating daily progress:", progressError)
+        return
+      }
+    } else {
+      setTodayProgress({
+        id: "offline",
+        member_id: selectedMember.id,
+        date: today,
+        daily_points_awarded: true,
+        rules_broken: {},
+      })
     }
 
-    // Update or create daily progress
-    const { error: progressError } = await supabase.from("daily_progress").upsert({
-      member_id: selectedMember.id,
-      date: today,
-      daily_points_awarded: true,
-      rules_broken: {},
-    })
-
-    if (progressError) {
-      console.error("[v0] Error updating daily progress:", progressError)
-      return
+    if (isOnline) {
+      await loadMemberData(selectedMember.id)
     }
-
-    await loadMemberData(selectedMember.id)
     console.log("[v0] Daily points awarded, data reloaded")
   }
 
@@ -190,49 +396,62 @@ export function FamilyPointsApp() {
     const today = new Date().toISOString().split("T")[0]
     const newRulesBroken = { ...todayProgress.rules_broken, [ruleKey]: true }
 
-    // Deduct point
-    await supabase.from("points_transactions").insert({
+    const success = await addTransactionOfflineSupport({
       member_id: selectedMember.id,
       points: -1,
       reason: `Rule broken: ${DAILY_RULES.find((r) => r.key === ruleKey)?.label}`,
       transaction_type: "rule_broken",
     })
 
-    // Update daily progress
-    await supabase.from("daily_progress").upsert({
-      member_id: selectedMember.id,
-      date: today,
-      daily_points_awarded: todayProgress.daily_points_awarded,
-      rules_broken: newRulesBroken,
-    })
+    if (!success && isOnline) return
 
-    loadMemberData(selectedMember.id)
+    if (isOnline) {
+      await supabase.from("daily_progress").upsert({
+        member_id: selectedMember.id,
+        date: today,
+        daily_points_awarded: todayProgress.daily_points_awarded,
+        rules_broken: newRulesBroken,
+      })
+    } else {
+      setTodayProgress({
+        ...todayProgress,
+        rules_broken: newRulesBroken,
+      })
+    }
+
+    if (isOnline) {
+      loadMemberData(selectedMember.id)
+    }
   }
 
   const addBonusPoints = async (activity: string, points: number) => {
     if (!selectedMember) return
 
-    await supabase.from("points_transactions").insert({
+    const success = await addTransactionOfflineSupport({
       member_id: selectedMember.id,
       points,
       reason: activity,
       transaction_type: "bonus_activity",
     })
 
-    loadMemberData(selectedMember.id)
+    if (success && isOnline) {
+      loadMemberData(selectedMember.id)
+    }
   }
 
   const addSchoolReward = async (points: number, reason: string) => {
     if (!selectedMember) return
 
-    await supabase.from("points_transactions").insert({
+    const success = await addTransactionOfflineSupport({
       member_id: selectedMember.id,
       points,
       reason,
       transaction_type: points > 0 ? "school_reward" : "school_penalty",
     })
 
-    loadMemberData(selectedMember.id)
+    if (success && isOnline) {
+      loadMemberData(selectedMember.id)
+    }
   }
 
   const resetMemberPoints = async () => {
@@ -247,13 +466,8 @@ export function FamilyPointsApp() {
     setLoading(true)
 
     try {
-      // Delete all points transactions
       await supabase.from("points_transactions").delete().eq("member_id", selectedMember.id)
-
-      // Delete all daily progress
       await supabase.from("daily_progress").delete().eq("member_id", selectedMember.id)
-
-      // Reload member data
       await loadMemberData(selectedMember.id)
 
       console.log("[v0] Successfully reset all data for", selectedMember.name)
@@ -265,27 +479,42 @@ export function FamilyPointsApp() {
   }
 
   const progressPercentage = Math.min((weeklyPoints / 75) * 100, 100)
-  const chfEarned = Math.min(Math.floor(weeklyPoints / 15), 5) // Max 5 CHF, 1 CHF per 15 points
+  const chfEarned = Math.min(Math.floor(weeklyPoints / 15), 5)
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-4xl">
-        <div className="text-center mb-6 sm:mb-8">
-          <h1 className="text-3xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
-            <Star className="h-6 w-6 sm:h-8 sm:w-8" />
-            Family Points
-          </h1>
-          <p className="text-muted-foreground text-sm sm:text-base">Track daily routines and earn rewards!</p>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-2 sm:py-4">
+      <div className="container mx-auto px-3 sm:px-6 lg:px-8 max-w-4xl">
+        <div className="flex justify-between items-center mb-4">
+          <div className="text-center flex-1">
+            <h1 className="text-2xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
+              <Star className="h-5 w-5 sm:h-8 sm:w-8" />
+              Family Points
+            </h1>
+            <p className="text-muted-foreground text-xs sm:text-base">Track daily routines and earn rewards!</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {isOnline ? <Wifi className="h-4 w-4 text-green-600" /> : <WifiOff className="h-4 w-4 text-red-600" />}
+            {offlineQueue.length > 0 && (
+              <Badge variant="outline" className="text-xs">
+                {offlineQueue.length} pending
+              </Badge>
+            )}
+          </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center mb-6 sm:mb-8">
+        <div className="flex flex-col gap-2 sm:gap-4 mb-4 sm:mb-8">
           {members.map((member) => (
-            <div key={member.id} className="flex flex-col sm:flex-row gap-2 items-center">
+            <div
+              key={member.id}
+              className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-center"
+            >
               <Button
                 variant={selectedMember?.id === member.id ? "default" : "outline"}
                 size="lg"
                 onClick={() => setSelectedMember(member)}
-                className="text-base sm:text-lg px-6 sm:px-8 w-full sm:w-auto"
+                className="text-sm sm:text-lg px-4 sm:px-8 py-3 sm:py-4 min-h-[48px] touch-manipulation"
+                onTouchStart={handleTouchStart}
+                onTouchEnd={(e) => handleTouchEnd(e, () => setSelectedMember(member))}
               >
                 {member.name}
               </Button>
@@ -295,7 +524,7 @@ export function FamilyPointsApp() {
                   size="sm"
                   onClick={resetMemberPoints}
                   disabled={loading}
-                  className="text-red-600 border-red-200 hover:bg-red-50 w-full sm:w-auto bg-transparent"
+                  className="text-red-600 border-red-200 hover:bg-red-50 bg-transparent min-h-[40px] touch-manipulation"
                 >
                   <RotateCcw className="h-4 w-4 mr-1" />
                   Reset
@@ -306,64 +535,76 @@ export function FamilyPointsApp() {
         </div>
 
         {selectedMember && (
-          <div className="space-y-4 sm:space-y-6">
-            {/* Progress Overview */}
+          <div className="space-y-3 sm:space-y-6">
             <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                  <Award className="h-5 w-5" />
+              <CardHeader className="pb-3 sm:pb-4">
+                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                  <Award className="h-4 w-4 sm:h-5 sm:w-5" />
                   {selectedMember.name}'s Progress
+                  {streakCount > 0 && (
+                    <Badge variant="secondary" className="bg-orange-100 text-orange-800 ml-2">
+                      <Flame className="h-3 w-3 mr-1" />
+                      {streakCount} day streak
+                    </Badge>
+                  )}
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3 sm:space-y-4">
                 <div>
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium">Weekly Progress</span>
-                    <span className="text-sm text-muted-foreground">{weeklyPoints}/75 points</span>
+                    <span className="text-xs sm:text-sm font-medium">Weekly Progress</span>
+                    <span className="text-xs sm:text-sm text-muted-foreground">{weeklyPoints}/75 points</span>
                   </div>
-                  <Progress value={progressPercentage} className="h-3" />
+                  <Progress value={progressPercentage} className="h-2 sm:h-3" />
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
                   <div className="p-2 sm:p-3 bg-blue-50 rounded-lg">
-                    <div className="text-xl sm:text-2xl font-bold text-primary">{weeklyPoints}</div>
+                    <div className="text-lg sm:text-2xl font-bold text-primary">{weeklyPoints}</div>
                     <div className="text-xs sm:text-sm text-muted-foreground">Weekly</div>
                   </div>
                   <div className="p-2 sm:p-3 bg-cyan-50 rounded-lg">
-                    <div className="text-xl sm:text-2xl font-bold text-secondary">{monthlyPoints}</div>
+                    <div className="text-lg sm:text-2xl font-bold text-secondary">{monthlyPoints}</div>
                     <div className="text-xs sm:text-sm text-muted-foreground">Monthly</div>
                   </div>
                   <div className="p-2 sm:p-3 bg-blue-100 rounded-lg">
-                    <div className="text-xl sm:text-2xl font-bold text-accent">CHF {chfEarned}</div>
+                    <div className="text-lg sm:text-2xl font-bold text-accent">CHF {chfEarned}</div>
                     <div className="text-xs sm:text-sm text-muted-foreground">Earned</div>
                   </div>
                 </div>
 
                 {weeklyPoints >= 75 && (
-                  <Badge variant="secondary" className="w-full justify-center bg-blue-100 text-blue-800">
+                  <Badge variant="secondary" className="w-full justify-center bg-blue-100 text-blue-800 py-2">
                     🎉 Maximum weekly points reached!
                   </Badge>
                 )}
               </CardContent>
             </Card>
 
-            {/* Daily Routine */}
             <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                  <Home className="h-5 w-5" />
+              <CardHeader className="pb-3 sm:pb-4">
+                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                  <Home className="h-4 w-4 sm:h-5 sm:w-5" />
                   Daily Routine
                 </CardTitle>
-                <CardDescription className="text-sm">Complete your daily tasks to earn 15 points</CardDescription>
+                <CardDescription className="text-xs sm:text-sm">
+                  Complete your daily tasks to earn 15 points
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3 sm:space-y-4">
                 <Button
                   onClick={awardDailyPoints}
                   disabled={todayProgress?.daily_points_awarded || loading}
-                  className="w-full bg-blue-600 hover:bg-blue-700"
+                  className="w-full bg-blue-600 hover:bg-blue-700 min-h-[48px] touch-manipulation text-sm sm:text-base"
                   size="lg"
+                  onTouchStart={handleTouchStart}
+                  onTouchEnd={(e) => handleTouchEnd(e, awardDailyPoints)}
                 >
-                  {todayProgress?.daily_points_awarded ? "Daily Points Awarded ✓" : "Award Daily Points (+15)"}
+                  {loading
+                    ? "Loading..."
+                    : todayProgress?.daily_points_awarded
+                      ? "Daily Points Awarded ✓"
+                      : "Award Daily Points (+15)"}
                 </Button>
 
                 <Separator />
@@ -372,18 +613,24 @@ export function FamilyPointsApp() {
                   {DAILY_RULES.map((rule) => (
                     <div
                       key={rule.key}
-                      className="flex items-center justify-between p-3 rounded-lg bg-blue-50/50 border border-blue-100"
+                      className={`flex items-center justify-between p-3 rounded-lg bg-blue-50/50 border border-blue-100 transition-transform ${
+                        swipeDirection === "left" ? "transform -translate-x-2" : ""
+                      }`}
+                      onTouchStart={handleTouchStart}
+                      onTouchEnd={(e) => handleTouchEnd(e, () => breakRule(rule.key))}
                     >
-                      <span className="text-sm flex-1 pr-2">{rule.label}</span>
+                      <span className="text-xs sm:text-sm flex-1 pr-2">{rule.label}</span>
                       <Button
                         variant="destructive"
                         size="sm"
                         onClick={() => breakRule(rule.key)}
                         disabled={!todayProgress?.daily_points_awarded || todayProgress?.rules_broken?.[rule.key]}
-                        className="shrink-0"
+                        className="shrink-0 min-h-[36px] touch-manipulation"
                       >
-                        <Minus className="h-4 w-4" />
-                        <span className="ml-1">{todayProgress?.rules_broken?.[rule.key] ? "Broken" : "-1"}</span>
+                        <Minus className="h-3 w-3 sm:h-4 sm:w-4" />
+                        <span className="ml-1 text-xs sm:text-sm">
+                          {todayProgress?.rules_broken?.[rule.key] ? "Broken" : "-1"}
+                        </span>
                       </Button>
                     </div>
                   ))}
@@ -391,14 +638,15 @@ export function FamilyPointsApp() {
               </CardContent>
             </Card>
 
-            {/* Bonus Activities */}
             <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                  <Plus className="h-5 w-5" />
+              <CardHeader className="pb-3 sm:pb-4">
+                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                  <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
                   Bonus Activities
                 </CardTitle>
-                <CardDescription className="text-sm">Earn extra points for helping around the house</CardDescription>
+                <CardDescription className="text-xs sm:text-sm">
+                  Earn extra points for helping around the house
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-1 gap-2">
@@ -407,10 +655,14 @@ export function FamilyPointsApp() {
                       key={index}
                       variant="outline"
                       onClick={() => addBonusPoints(activity.label, activity.points)}
-                      className="justify-between p-4 h-auto border-blue-200 hover:bg-blue-50"
+                      className={`justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation transition-transform ${
+                        swipeDirection === "right" ? "transform translate-x-2" : ""
+                      }`}
+                      onTouchStart={handleTouchStart}
+                      onTouchEnd={(e) => handleTouchEnd(e, () => addBonusPoints(activity.label, activity.points))}
                     >
-                      <span className="text-left flex-1">{activity.label}</span>
-                      <Badge variant="secondary" className="bg-blue-100 text-blue-800 ml-2">
+                      <span className="text-left flex-1 text-xs sm:text-sm">{activity.label}</span>
+                      <Badge variant="secondary" className="bg-blue-100 text-blue-800 ml-2 text-xs">
                         +{activity.points}
                       </Badge>
                     </Button>
@@ -419,11 +671,10 @@ export function FamilyPointsApp() {
               </CardContent>
             </Card>
 
-            {/* School Performance */}
             <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
-                  <BookOpen className="h-5 w-5" />
+              <CardHeader className="pb-3 sm:pb-4">
+                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                  <BookOpen className="h-4 w-4 sm:h-5 sm:w-5" />
                   School Performance
                 </CardTitle>
               </CardHeader>
@@ -431,55 +682,56 @@ export function FamilyPointsApp() {
                 <Button
                   variant="outline"
                   onClick={() => addSchoolReward(75, "Monthly average ≥ 5")}
-                  className="w-full justify-between p-4 h-auto border-blue-200 hover:bg-blue-50"
+                  className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
                 >
-                  <span>Monthly average ≥ 5</span>
-                  <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                  <span className="text-xs sm:text-sm">Monthly average ≥ 5</span>
+                  <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
                     +75
                   </Badge>
                 </Button>
                 <Button
                   variant="outline"
                   onClick={() => addSchoolReward(150, "All subjects ≥ 5")}
-                  className="w-full justify-between p-4 h-auto border-blue-200 hover:bg-blue-50"
+                  className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
                 >
-                  <span>All subjects ≥ 5</span>
-                  <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                  <span className="text-xs sm:text-sm">All subjects ≥ 5</span>
+                  <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
                     +150
                   </Badge>
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={() => addSchoolReward(-75, "Grade below minimum")}
-                  className="w-full justify-between p-4 h-auto"
+                  className="w-full justify-between p-3 sm:p-4 h-auto min-h-[48px] touch-manipulation"
                 >
-                  <span>Grade below minimum</span>
-                  <Badge variant="destructive">-75</Badge>
+                  <span className="text-xs sm:text-sm">Grade below minimum</span>
+                  <Badge variant="destructive" className="text-xs">
+                    -75
+                  </Badge>
                 </Button>
               </CardContent>
             </Card>
 
-            {/* Recent Activity */}
             <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-4">
-                <CardTitle className="text-lg sm:text-xl">Recent Activity</CardTitle>
+              <CardHeader className="pb-3 sm:pb-4">
+                <CardTitle className="text-base sm:text-xl">Recent Activity</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
                   {recentTransactions.map((transaction) => (
                     <div
                       key={transaction.id}
-                      className="flex justify-between items-center p-3 rounded-lg bg-blue-50/50 border border-blue-100"
+                      className="flex justify-between items-center p-2 sm:p-3 rounded-lg bg-blue-50/50 border border-blue-100"
                     >
                       <div className="flex-1">
-                        <div className="text-sm font-medium">{transaction.reason}</div>
+                        <div className="text-xs sm:text-sm font-medium">{transaction.reason}</div>
                         <div className="text-xs text-muted-foreground">
                           {new Date(transaction.created_at).toLocaleDateString()}
                         </div>
                       </div>
                       <Badge
                         variant={transaction.points > 0 ? "secondary" : "destructive"}
-                        className={transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}
+                        className={`text-xs ${transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}`}
                       >
                         {transaction.points > 0 ? "+" : ""}
                         {transaction.points}
@@ -487,7 +739,7 @@ export function FamilyPointsApp() {
                     </div>
                   ))}
                   {recentTransactions.length === 0 && (
-                    <p className="text-center text-muted-foreground py-4">No recent activity</p>
+                    <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">No recent activity</p>
                   )}
                 </div>
               </CardContent>
