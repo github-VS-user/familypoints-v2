@@ -1,8 +1,9 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 
-import { useState, useEffect, useRef } from "react"
+import type { ReactNode } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,6 +27,7 @@ interface PointsTransaction {
 
 interface DailyProgress {
   id: string
+  member_id?: string
   date: string
   daily_points_awarded: boolean
   rules_broken: Record<string, boolean>
@@ -55,7 +57,7 @@ const DAILY_RULES = [
   { key: "parent", label: "Don't act like a parent" },
   { key: "interrupt", label: "Don't interrupt others" },
   { key: "repeat", label: "Don't make mom repeat things" },
-]
+] as const
 
 const BONUS_ACTIVITIES = [
   { label: "Set the table", points: 5 },
@@ -65,7 +67,206 @@ const BONUS_ACTIVITIES = [
   { label: "Clean rabbit area", points: 15 },
   { label: "Order drawers/closets", points: 15 },
   { label: "General cleaning", points: 15 },
-]
+] as const
+
+class ErrorBoundary extends React.Component<{ children: ReactNode; fallback?: ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: ReactNode; fallback?: ReactNode }) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("[v0] Error caught by boundary:", error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        this.props.fallback || (
+          <Card className="shadow-lg border-red-200">
+            <CardContent className="text-center py-8">
+              <p className="text-red-600">Something went wrong. Please refresh the page.</p>
+            </CardContent>
+          </Card>
+        )
+      )
+    }
+
+    return this.props.children
+  }
+}
+
+const ProgressCard = React.memo(
+  ({
+    selectedMember,
+    weeklyPoints,
+    monthlyPoints,
+    streakCount,
+  }: {
+    selectedMember: FamilyMember
+    weeklyPoints: number
+    monthlyPoints: number
+    streakCount: number
+  }) => {
+    const progressPercentage = useMemo(() => Math.min((weeklyPoints / 75) * 100, 100), [weeklyPoints])
+    const chfEarned = useMemo(() => Math.min(Math.floor(weeklyPoints / 15), 5), [weeklyPoints])
+
+    return (
+      <Card className="shadow-lg border-blue-200">
+        <CardHeader className="pb-3 sm:pb-4">
+          <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+            <Award className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+            <span>{selectedMember.name}'s Progress</span>
+            {streakCount > 0 && (
+              <Badge variant="secondary" className="bg-orange-100 text-orange-800 ml-2">
+                <Flame className="h-3 w-3 mr-1" aria-hidden="true" />
+                <span>{streakCount} day streak</span>
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 sm:space-y-4">
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs sm:text-sm font-medium">Weekly Progress</span>
+              <span
+                className="text-xs sm:text-sm text-muted-foreground"
+                aria-label={`${weeklyPoints} out of 75 points`}
+              >
+                {weeklyPoints}/75 points
+              </span>
+            </div>
+            <Progress
+              value={progressPercentage}
+              className="h-2 sm:h-3"
+              aria-label={`Weekly progress: ${Math.round(progressPercentage)}% complete`}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
+            <div className="p-2 sm:p-3 bg-blue-50 rounded-lg">
+              <div className="text-lg sm:text-2xl font-bold text-primary" aria-label={`${weeklyPoints} weekly points`}>
+                {weeklyPoints}
+              </div>
+              <div className="text-xs sm:text-sm text-muted-foreground">Weekly</div>
+            </div>
+            <div className="p-2 sm:p-3 bg-cyan-50 rounded-lg">
+              <div
+                className="text-lg sm:text-2xl font-bold text-secondary"
+                aria-label={`${monthlyPoints} monthly points`}
+              >
+                {monthlyPoints}
+              </div>
+              <div className="text-xs sm:text-sm text-muted-foreground">Monthly</div>
+            </div>
+            <div className="p-2 sm:p-3 bg-blue-100 rounded-lg">
+              <div className="text-lg sm:text-2xl font-bold text-accent" aria-label={`${chfEarned} CHF earned`}>
+                CHF {chfEarned}
+              </div>
+              <div className="text-xs sm:text-sm text-muted-foreground">Earned</div>
+            </div>
+          </div>
+
+          {weeklyPoints >= 75 && (
+            <Badge variant="secondary" className="w-full justify-center bg-blue-100 text-blue-800 py-2" role="status">
+              🎉 Maximum weekly points reached!
+            </Badge>
+          )}
+        </CardContent>
+      </Card>
+    )
+  },
+)
+
+ProgressCard.displayName = "ProgressCard"
+
+const DailyRoutineCard = React.memo(
+  ({
+    selectedMember,
+    todayProgress,
+    loading,
+    onAwardDailyPoints,
+    onBreakRule,
+    swipeDirection,
+    onTouchStart,
+    onTouchEnd,
+  }: {
+    selectedMember: FamilyMember
+    todayProgress: DailyProgress | null
+    loading: boolean
+    onAwardDailyPoints: () => void
+    onBreakRule: (ruleKey: string) => void
+    swipeDirection: string
+    onTouchStart: (e: React.TouchEvent) => void
+    onTouchEnd: (e: React.TouchEvent, action: () => void) => void
+  }) => {
+    return (
+      <Card className="shadow-lg border-blue-200">
+        <CardHeader className="pb-3 sm:pb-4">
+          <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+            <Home className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+            Daily Routine
+          </CardTitle>
+          <CardDescription className="text-xs sm:text-sm">Complete your daily tasks to earn 15 points</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 sm:space-y-4">
+          <Button
+            onClick={onAwardDailyPoints}
+            disabled={todayProgress?.daily_points_awarded || loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 min-h-[48px] touch-manipulation text-sm sm:text-base"
+            size="lg"
+            onTouchStart={onTouchStart}
+            onTouchEnd={(e) => onTouchEnd(e, onAwardDailyPoints)}
+            aria-label={todayProgress?.daily_points_awarded ? "Daily points already awarded" : "Award 15 daily points"}
+          >
+            {loading
+              ? "Loading..."
+              : todayProgress?.daily_points_awarded
+                ? "Daily Points Awarded ✓"
+                : "Award Daily Points (+15)"}
+          </Button>
+
+          <Separator />
+
+          <div className="grid gap-2" role="list" aria-label="Daily rules checklist">
+            {DAILY_RULES.map((rule) => (
+              <div
+                key={rule.key}
+                className={`flex items-center justify-between p-3 rounded-lg bg-blue-50/50 border border-blue-100 transition-transform ${
+                  swipeDirection === "left" ? "transform -translate-x-2" : ""
+                }`}
+                onTouchStart={onTouchStart}
+                onTouchEnd={(e) => onTouchEnd(e, () => onBreakRule(rule.key))}
+                role="listitem"
+              >
+                <span className="text-xs sm:text-sm flex-1 pr-2">{rule.label}</span>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => onBreakRule(rule.key)}
+                  disabled={!todayProgress?.daily_points_awarded || todayProgress?.rules_broken?.[rule.key]}
+                  className="shrink-0 min-h-[36px] touch-manipulation"
+                  aria-label={`${rule.label} - ${todayProgress?.rules_broken?.[rule.key] ? "Already broken" : "Deduct 1 point"}`}
+                >
+                  <Minus className="h-3 w-3 sm:h-4 sm:w-4" aria-hidden="true" />
+                  <span className="ml-1 text-xs sm:text-sm">
+                    {todayProgress?.rules_broken?.[rule.key] ? "Broken" : "-1"}
+                  </span>
+                </Button>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    )
+  },
+)
+
+DailyRoutineCard.displayName = "DailyRoutineCard"
 
 export function FamilyPointsApp() {
   const [selectedMember, setSelectedMember] = useState<FamilyMember | null>(null)
@@ -78,12 +279,137 @@ export function FamilyPointsApp() {
   const [isOnline, setIsOnline] = useState(true)
   const [offlineQueue, setOfflineQueue] = useState<OfflineTransaction[]>([])
   const [streakCount, setStreakCount] = useState(0)
+  const [error, setError] = useState<string | null>(null)
 
   const touchStartX = useRef<number>(0)
   const touchStartY = useRef<number>(0)
   const [swipeDirection, setSwipeDirection] = useState<string>("")
 
   const supabase = createClient()
+
+  const progressPercentage = useMemo(() => Math.min((weeklyPoints / 75) * 100, 100), [weeklyPoints])
+  const chfEarned = useMemo(() => Math.min(Math.floor(weeklyPoints / 15), 5), [weeklyPoints])
+
+  const withErrorHandling = useCallback(async (operation: () => Promise<void>, errorMessage: string) => {
+    try {
+      setError(null)
+      await operation()
+    } catch (error) {
+      console.error(`[v0] ${errorMessage}:`, error)
+      setError(errorMessage)
+    }
+  }, [])
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX
+    touchStartY.current = e.touches[0].clientY
+  }, [])
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent, action: () => void) => {
+    const touchEndX = e.changedTouches[0].clientX
+    const touchEndY = e.changedTouches[0].clientY
+
+    const deltaX = touchEndX - touchStartX.current
+    const deltaY = touchEndY - touchStartY.current
+
+    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
+      if (deltaX > 0) {
+        setSwipeDirection("right")
+        action()
+      } else {
+        setSwipeDirection("left")
+        action()
+      }
+
+      setTimeout(() => setSwipeDirection(""), 300)
+    }
+  }, [])
+
+  // ... existing code for all the other functions ...
+
+  const loadMembers = async () => {
+    await withErrorHandling(async () => {
+      const { data, error } = await supabase.from("family_members").select("*").order("name")
+
+      if (error) {
+        throw error
+      }
+
+      setMembers(data || [])
+      localStorage.setItem("familyPointsMembers", JSON.stringify(data || []))
+    }, "Failed to load family members")
+  }
+
+  const loadMemberData = async (memberId: string) => {
+    setLoading(true)
+
+    await withErrorHandling(async () => {
+      const now = new Date()
+      const startOfWeek = new Date(now)
+      const dayOfWeek = startOfWeek.getDay()
+      const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+      startOfWeek.setDate(startOfWeek.getDate() + daysToMonday)
+      startOfWeek.setHours(0, 0, 0, 0)
+
+      console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
+
+      const { data: weeklyData } = await supabase
+        .from("points_transactions")
+        .select("points")
+        .eq("member_id", memberId)
+        .gte("created_at", startOfWeek.toISOString())
+
+      const weeklyTotal = weeklyData?.reduce((sum, t) => sum + t.points, 0) || 0
+      console.log("[v0] Weekly points calculated:", weeklyTotal, "from", weeklyData?.length, "transactions")
+      setWeeklyPoints(Math.max(0, weeklyTotal))
+
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      startOfMonth.setHours(0, 0, 0, 0)
+
+      const { data: monthlyData } = await supabase
+        .from("points_transactions")
+        .select("points")
+        .eq("member_id", memberId)
+        .gte("created_at", startOfMonth.toISOString())
+
+      const monthlyTotal = monthlyData?.reduce((sum, t) => sum + t.points, 0) || 0
+      setMonthlyPoints(Math.max(0, monthlyTotal))
+
+      const today = new Date().toISOString().split("T")[0]
+      const { data: progressData } = await supabase
+        .from("daily_progress")
+        .select("*")
+        .eq("member_id", memberId)
+        .eq("date", today)
+        .single()
+
+      setTodayProgress(progressData)
+
+      const { data: transactionsData } = await supabase
+        .from("points_transactions")
+        .select("*")
+        .eq("member_id", memberId)
+        .order("created_at", { ascending: false })
+        .limit(10)
+
+      setRecentTransactions(transactionsData || [])
+
+      localStorage.setItem(
+        "familyPointsData",
+        JSON.stringify({
+          memberId,
+          weeklyPoints: weeklyTotal,
+          monthlyPoints: monthlyTotal,
+          todayProgress: progressData,
+          recentTransactions: transactionsData || [],
+        }),
+      )
+    }, "Failed to load member data")
+
+    setLoading(false)
+  }
+
+  // ... existing code for other functions ...
 
   useEffect(() => {
     loadMembers()
@@ -180,131 +506,6 @@ export function FamilyPointsApp() {
     } catch (error) {
       console.error("[v0] Error calculating streak:", error)
       setStreakCount(0)
-    }
-  }
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX
-    touchStartY.current = e.touches[0].clientY
-  }
-
-  const handleTouchEnd = (e: React.TouchEvent, action: () => void) => {
-    const touchEndX = e.changedTouches[0].clientX
-    const touchEndY = e.changedTouches[0].clientY
-
-    const deltaX = touchEndX - touchStartX.current
-    const deltaY = touchEndY - touchStartY.current
-
-    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
-      if (deltaX > 0) {
-        setSwipeDirection("right")
-        action()
-      } else {
-        setSwipeDirection("left")
-        action()
-      }
-
-      setTimeout(() => setSwipeDirection(""), 300)
-    }
-  }
-
-  const loadMembers = async () => {
-    try {
-      const { data, error } = await supabase.from("family_members").select("*").order("name")
-
-      if (error) {
-        console.error("Error loading members:", error)
-        return
-      }
-
-      setMembers(data || [])
-    } catch (error) {
-      console.error("[v0] Network error loading members:", error)
-      const savedMembers = localStorage.getItem("familyPointsMembers")
-      if (savedMembers) {
-        setMembers(JSON.parse(savedMembers))
-      }
-    }
-  }
-
-  const loadMemberData = async (memberId: string) => {
-    setLoading(true)
-
-    try {
-      const now = new Date()
-      const startOfWeek = new Date(now)
-      const dayOfWeek = startOfWeek.getDay()
-      const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
-      startOfWeek.setDate(startOfWeek.getDate() + daysToMonday)
-      startOfWeek.setHours(0, 0, 0, 0)
-
-      console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
-
-      const { data: weeklyData } = await supabase
-        .from("points_transactions")
-        .select("points")
-        .eq("member_id", memberId)
-        .gte("created_at", startOfWeek.toISOString())
-
-      const weeklyTotal = weeklyData?.reduce((sum, t) => sum + t.points, 0) || 0
-      console.log("[v0] Weekly points calculated:", weeklyTotal, "from", weeklyData?.length, "transactions")
-      setWeeklyPoints(Math.max(0, weeklyTotal))
-
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-      startOfMonth.setHours(0, 0, 0, 0)
-
-      const { data: monthlyData } = await supabase
-        .from("points_transactions")
-        .select("points")
-        .eq("member_id", memberId)
-        .gte("created_at", startOfMonth.toISOString())
-
-      const monthlyTotal = monthlyData?.reduce((sum, t) => sum + t.points, 0) || 0
-      setMonthlyPoints(Math.max(0, monthlyTotal))
-
-      const today = new Date().toISOString().split("T")[0]
-      const { data: progressData } = await supabase
-        .from("daily_progress")
-        .select("*")
-        .eq("member_id", memberId)
-        .eq("date", today)
-        .single()
-
-      setTodayProgress(progressData)
-
-      const { data: transactionsData } = await supabase
-        .from("points_transactions")
-        .select("*")
-        .eq("member_id", memberId)
-        .order("created_at", { ascending: false })
-        .limit(10)
-
-      setRecentTransactions(transactionsData || [])
-
-      localStorage.setItem(
-        "familyPointsData",
-        JSON.stringify({
-          memberId,
-          weeklyPoints: weeklyTotal,
-          monthlyPoints: monthlyTotal,
-          todayProgress: progressData,
-          recentTransactions: transactionsData || [],
-        }),
-      )
-    } catch (error) {
-      console.error("[v0] Network error loading member data:", error)
-      const savedData = localStorage.getItem("familyPointsData")
-      if (savedData) {
-        const data = JSON.parse(savedData)
-        if (data.memberId === memberId) {
-          setWeeklyPoints(data.weeklyPoints || 0)
-          setMonthlyPoints(data.monthlyPoints || 0)
-          setTodayProgress(data.todayProgress)
-          setRecentTransactions(data.recentTransactions || [])
-        }
-      }
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -478,285 +679,230 @@ export function FamilyPointsApp() {
     }
   }
 
-  const progressPercentage = Math.min((weeklyPoints / 75) * 100, 100)
-  const chfEarned = Math.min(Math.floor(weeklyPoints / 15), 5)
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-2 sm:py-4">
-      <div className="container mx-auto px-3 sm:px-6 lg:px-8 max-w-4xl">
-        <div className="flex justify-between items-center mb-4">
-          <div className="text-center flex-1">
-            <h1 className="text-2xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
-              <Star className="h-5 w-5 sm:h-8 sm:w-8" />
-              Family Points
-            </h1>
-            <p className="text-muted-foreground text-xs sm:text-base">Track daily routines and earn rewards!</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {isOnline ? <Wifi className="h-4 w-4 text-green-600" /> : <WifiOff className="h-4 w-4 text-red-600" />}
-            {offlineQueue.length > 0 && (
-              <Badge variant="outline" className="text-xs">
-                {offlineQueue.length} pending
-              </Badge>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2 sm:gap-4 mb-4 sm:mb-8">
-          {members.map((member) => (
+    <ErrorBoundary>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-2 sm:py-4">
+        <div className="container mx-auto px-3 sm:px-6 lg:px-8 max-w-4xl">
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-center flex-1">
+              <h1 className="text-2xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
+                <Star className="h-5 w-5 sm:h-8 sm:w-8" aria-hidden="true" />
+                Family Points
+              </h1>
+              <p className="text-muted-foreground text-xs sm:text-base">Track daily routines and earn rewards!</p>
+            </div>
             <div
-              key={member.id}
-              className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-center"
+              className="flex items-center gap-2"
+              role="status"
+              aria-label={`Connection status: ${isOnline ? "online" : "offline"}`}
             >
-              <Button
-                variant={selectedMember?.id === member.id ? "default" : "outline"}
-                size="lg"
-                onClick={() => setSelectedMember(member)}
-                className="text-sm sm:text-lg px-4 sm:px-8 py-3 sm:py-4 min-h-[48px] touch-manipulation"
-                onTouchStart={handleTouchStart}
-                onTouchEnd={(e) => handleTouchEnd(e, () => setSelectedMember(member))}
-              >
-                {member.name}
-              </Button>
-              {selectedMember?.id === member.id && (
-                <Button
+              {isOnline ? (
+                <Wifi className="h-4 w-4 text-green-600" aria-label="Online" />
+              ) : (
+                <WifiOff className="h-4 w-4 text-red-600" aria-label="Offline" />
+              )}
+              {offlineQueue.length > 0 && (
+                <Badge
                   variant="outline"
-                  size="sm"
-                  onClick={resetMemberPoints}
-                  disabled={loading}
-                  className="text-red-600 border-red-200 hover:bg-red-50 bg-transparent min-h-[40px] touch-manipulation"
+                  className="text-xs"
+                  aria-label={`${offlineQueue.length} transactions pending sync`}
                 >
-                  <RotateCcw className="h-4 w-4 mr-1" />
-                  Reset
-                </Button>
+                  {offlineQueue.length} pending
+                </Badge>
               )}
             </div>
-          ))}
-        </div>
-
-        {selectedMember && (
-          <div className="space-y-3 sm:space-y-6">
-            <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-3 sm:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
-                  <Award className="h-4 w-4 sm:h-5 sm:w-5" />
-                  {selectedMember.name}'s Progress
-                  {streakCount > 0 && (
-                    <Badge variant="secondary" className="bg-orange-100 text-orange-800 ml-2">
-                      <Flame className="h-3 w-3 mr-1" />
-                      {streakCount} day streak
-                    </Badge>
-                  )}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 sm:space-y-4">
-                <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs sm:text-sm font-medium">Weekly Progress</span>
-                    <span className="text-xs sm:text-sm text-muted-foreground">{weeklyPoints}/75 points</span>
-                  </div>
-                  <Progress value={progressPercentage} className="h-2 sm:h-3" />
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
-                  <div className="p-2 sm:p-3 bg-blue-50 rounded-lg">
-                    <div className="text-lg sm:text-2xl font-bold text-primary">{weeklyPoints}</div>
-                    <div className="text-xs sm:text-sm text-muted-foreground">Weekly</div>
-                  </div>
-                  <div className="p-2 sm:p-3 bg-cyan-50 rounded-lg">
-                    <div className="text-lg sm:text-2xl font-bold text-secondary">{monthlyPoints}</div>
-                    <div className="text-xs sm:text-sm text-muted-foreground">Monthly</div>
-                  </div>
-                  <div className="p-2 sm:p-3 bg-blue-100 rounded-lg">
-                    <div className="text-lg sm:text-2xl font-bold text-accent">CHF {chfEarned}</div>
-                    <div className="text-xs sm:text-sm text-muted-foreground">Earned</div>
-                  </div>
-                </div>
-
-                {weeklyPoints >= 75 && (
-                  <Badge variant="secondary" className="w-full justify-center bg-blue-100 text-blue-800 py-2">
-                    🎉 Maximum weekly points reached!
-                  </Badge>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-3 sm:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
-                  <Home className="h-4 w-4 sm:h-5 sm:w-5" />
-                  Daily Routine
-                </CardTitle>
-                <CardDescription className="text-xs sm:text-sm">
-                  Complete your daily tasks to earn 15 points
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 sm:space-y-4">
-                <Button
-                  onClick={awardDailyPoints}
-                  disabled={todayProgress?.daily_points_awarded || loading}
-                  className="w-full bg-blue-600 hover:bg-blue-700 min-h-[48px] touch-manipulation text-sm sm:text-base"
-                  size="lg"
-                  onTouchStart={handleTouchStart}
-                  onTouchEnd={(e) => handleTouchEnd(e, awardDailyPoints)}
-                >
-                  {loading
-                    ? "Loading..."
-                    : todayProgress?.daily_points_awarded
-                      ? "Daily Points Awarded ✓"
-                      : "Award Daily Points (+15)"}
-                </Button>
-
-                <Separator />
-
-                <div className="grid gap-2">
-                  {DAILY_RULES.map((rule) => (
-                    <div
-                      key={rule.key}
-                      className={`flex items-center justify-between p-3 rounded-lg bg-blue-50/50 border border-blue-100 transition-transform ${
-                        swipeDirection === "left" ? "transform -translate-x-2" : ""
-                      }`}
-                      onTouchStart={handleTouchStart}
-                      onTouchEnd={(e) => handleTouchEnd(e, () => breakRule(rule.key))}
-                    >
-                      <span className="text-xs sm:text-sm flex-1 pr-2">{rule.label}</span>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => breakRule(rule.key)}
-                        disabled={!todayProgress?.daily_points_awarded || todayProgress?.rules_broken?.[rule.key]}
-                        className="shrink-0 min-h-[36px] touch-manipulation"
-                      >
-                        <Minus className="h-3 w-3 sm:h-4 sm:w-4" />
-                        <span className="ml-1 text-xs sm:text-sm">
-                          {todayProgress?.rules_broken?.[rule.key] ? "Broken" : "-1"}
-                        </span>
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-3 sm:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
-                  <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
-                  Bonus Activities
-                </CardTitle>
-                <CardDescription className="text-xs sm:text-sm">
-                  Earn extra points for helping around the house
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 gap-2">
-                  {BONUS_ACTIVITIES.map((activity, index) => (
-                    <Button
-                      key={index}
-                      variant="outline"
-                      onClick={() => addBonusPoints(activity.label, activity.points)}
-                      className={`justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation transition-transform ${
-                        swipeDirection === "right" ? "transform translate-x-2" : ""
-                      }`}
-                      onTouchStart={handleTouchStart}
-                      onTouchEnd={(e) => handleTouchEnd(e, () => addBonusPoints(activity.label, activity.points))}
-                    >
-                      <span className="text-left flex-1 text-xs sm:text-sm">{activity.label}</span>
-                      <Badge variant="secondary" className="bg-blue-100 text-blue-800 ml-2 text-xs">
-                        +{activity.points}
-                      </Badge>
-                    </Button>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-3 sm:pb-4">
-                <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
-                  <BookOpen className="h-4 w-4 sm:h-5 sm:w-5" />
-                  School Performance
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Button
-                  variant="outline"
-                  onClick={() => addSchoolReward(75, "Monthly average ≥ 5")}
-                  className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                >
-                  <span className="text-xs sm:text-sm">Monthly average ≥ 5</span>
-                  <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
-                    +75
-                  </Badge>
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => addSchoolReward(150, "All subjects ≥ 5")}
-                  className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                >
-                  <span className="text-xs sm:text-sm">All subjects ≥ 5</span>
-                  <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
-                    +150
-                  </Badge>
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => addSchoolReward(-75, "Grade below minimum")}
-                  className="w-full justify-between p-3 sm:p-4 h-auto min-h-[48px] touch-manipulation"
-                >
-                  <span className="text-xs sm:text-sm">Grade below minimum</span>
-                  <Badge variant="destructive" className="text-xs">
-                    -75
-                  </Badge>
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card className="shadow-lg border-blue-200">
-              <CardHeader className="pb-3 sm:pb-4">
-                <CardTitle className="text-base sm:text-xl">Recent Activity</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {recentTransactions.map((transaction) => (
-                    <div
-                      key={transaction.id}
-                      className="flex justify-between items-center p-2 sm:p-3 rounded-lg bg-blue-50/50 border border-blue-100"
-                    >
-                      <div className="flex-1">
-                        <div className="text-xs sm:text-sm font-medium">{transaction.reason}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {new Date(transaction.created_at).toLocaleDateString()}
-                        </div>
-                      </div>
-                      <Badge
-                        variant={transaction.points > 0 ? "secondary" : "destructive"}
-                        className={`text-xs ${transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}`}
-                      >
-                        {transaction.points > 0 ? "+" : ""}
-                        {transaction.points}
-                      </Badge>
-                    </div>
-                  ))}
-                  {recentTransactions.length === 0 && (
-                    <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">No recent activity</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
           </div>
-        )}
 
-        {!selectedMember && (
-          <Card className="shadow-lg border-blue-200">
-            <CardContent className="text-center py-8 sm:py-12">
-              <Star className="h-12 w-12 text-blue-300 mx-auto mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Select a Family Member</h3>
-              <p className="text-muted-foreground">Choose Dario or Linda to start tracking points!</p>
-            </CardContent>
-          </Card>
-        )}
+          {error && (
+            <Card className="shadow-lg border-red-200 mb-4">
+              <CardContent className="text-center py-4">
+                <p className="text-red-600 text-sm">{error}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="flex flex-col gap-2 sm:gap-4 mb-4 sm:mb-8" role="group" aria-label="Family member selection">
+            {members.map((member) => (
+              <div
+                key={member.id}
+                className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-center"
+              >
+                <Button
+                  variant={selectedMember?.id === member.id ? "default" : "outline"}
+                  size="lg"
+                  onClick={() => setSelectedMember(member)}
+                  className="text-sm sm:text-lg px-4 sm:px-8 py-3 sm:py-4 min-h-[48px] touch-manipulation"
+                  onTouchStart={handleTouchStart}
+                  onTouchEnd={(e) => handleTouchEnd(e, () => setSelectedMember(member))}
+                  aria-pressed={selectedMember?.id === member.id}
+                  aria-label={`Select ${member.name}`}
+                >
+                  {member.name}
+                </Button>
+                {selectedMember?.id === member.id && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={resetMemberPoints}
+                    disabled={loading}
+                    className="text-red-600 border-red-200 hover:bg-red-50 bg-transparent min-h-[40px] touch-manipulation"
+                    aria-label={`Reset all points for ${member.name}`}
+                  >
+                    <RotateCcw className="h-4 w-4 mr-1" aria-hidden="true" />
+                    Reset
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {selectedMember && (
+            <div className="space-y-3 sm:space-y-6">
+              <ProgressCard
+                selectedMember={selectedMember}
+                weeklyPoints={weeklyPoints}
+                monthlyPoints={monthlyPoints}
+                streakCount={streakCount}
+              />
+
+              <DailyRoutineCard
+                selectedMember={selectedMember}
+                todayProgress={todayProgress}
+                loading={loading}
+                onAwardDailyPoints={awardDailyPoints}
+                onBreakRule={breakRule}
+                swipeDirection={swipeDirection}
+                onTouchStart={handleTouchStart}
+                onTouchEnd={handleTouchEnd}
+              />
+
+              <Card className="shadow-lg border-blue-200">
+                <CardHeader className="pb-3 sm:pb-4">
+                  <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                    <Plus className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+                    Bonus Activities
+                  </CardTitle>
+                  <CardDescription className="text-xs sm:text-sm">
+                    Earn extra points for helping around the house
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 gap-2" role="list" aria-label="Bonus activities">
+                    {BONUS_ACTIVITIES.map((activity, index) => (
+                      <Button
+                        key={index}
+                        variant="outline"
+                        onClick={() => addBonusPoints(activity.label, activity.points)}
+                        className={`justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation transition-transform ${
+                          swipeDirection === "right" ? "transform translate-x-2" : ""
+                        }`}
+                        onTouchStart={handleTouchStart}
+                        onTouchEnd={(e) => handleTouchEnd(e, () => addBonusPoints(activity.label, activity.points))}
+                        role="listitem"
+                        aria-label={`${activity.label} - earn ${activity.points} points`}
+                      >
+                        <span className="text-left flex-1 text-xs sm:text-sm">{activity.label}</span>
+                        <Badge variant="secondary" className="bg-blue-100 text-blue-800 ml-2 text-xs">
+                          +{activity.points}
+                        </Badge>
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="shadow-lg border-blue-200">
+                <CardHeader className="pb-3 sm:pb-4">
+                  <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
+                    <BookOpen className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+                    School Performance
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => addSchoolReward(75, "Monthly average ≥ 5")}
+                    className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
+                    aria-label="Monthly average greater than or equal to 5 - earn 75 points"
+                  >
+                    <span className="text-xs sm:text-sm">Monthly average ≥ 5</span>
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
+                      +75
+                    </Badge>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => addSchoolReward(150, "All subjects ≥ 5")}
+                    className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
+                    aria-label="All subjects greater than or equal to 5 - earn 150 points"
+                  >
+                    <span className="text-xs sm:text-sm">All subjects ≥ 5</span>
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
+                      +150
+                    </Badge>
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => addSchoolReward(-75, "Grade below minimum")}
+                    className="w-full justify-between p-3 sm:p-4 h-auto min-h-[48px] touch-manipulation"
+                    aria-label="Grade below minimum - lose 75 points"
+                  >
+                    <span className="text-xs sm:text-sm">Grade below minimum</span>
+                    <Badge variant="destructive" className="text-xs">
+                      -75
+                    </Badge>
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="shadow-lg border-blue-200">
+                <CardHeader className="pb-3 sm:pb-4">
+                  <CardTitle className="text-base sm:text-xl">Recent Activity</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2" role="list" aria-label="Recent point transactions">
+                    {recentTransactions.map((transaction) => (
+                      <div
+                        key={transaction.id}
+                        className="flex justify-between items-center p-2 sm:p-3 rounded-lg bg-blue-50/50 border border-blue-100"
+                        role="listitem"
+                      >
+                        <div className="flex-1">
+                          <div className="text-xs sm:text-sm font-medium">{transaction.reason}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {new Date(transaction.created_at).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <Badge
+                          variant={transaction.points > 0 ? "secondary" : "destructive"}
+                          className={`text-xs ${transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}`}
+                          aria-label={`${transaction.points > 0 ? "Gained" : "Lost"} ${Math.abs(transaction.points)} points`}
+                        >
+                          {transaction.points > 0 ? "+" : ""}
+                          {transaction.points}
+                        </Badge>
+                      </div>
+                    ))}
+                    {recentTransactions.length === 0 && (
+                      <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">No recent activity</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {!selectedMember && (
+            <Card className="shadow-lg border-blue-200">
+              <CardContent className="text-center py-8 sm:py-12">
+                <Star className="h-12 w-12 text-blue-300 mx-auto mb-4" aria-hidden="true" />
+                <h3 className="text-lg font-semibold mb-2">Select a Family Member</h3>
+                <p className="text-muted-foreground">Choose Dario or Linda to start tracking points!</p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
-    </div>
+    </ErrorBoundary>
   )
 }
