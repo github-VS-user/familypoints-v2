@@ -91,9 +91,15 @@ export function FamilyPointsApp() {
   const loadMemberData = async (memberId: string) => {
     setLoading(true)
 
-    // Get current week's points
-    const startOfWeek = new Date()
-    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay() + 1) // Monday
+    const now = new Date()
+    const startOfWeek = new Date(now)
+    // Set to Monday of current week (0 = Sunday, 1 = Monday)
+    const dayOfWeek = startOfWeek.getDay()
+    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+    startOfWeek.setDate(startOfWeek.getDate() + daysToMonday)
+    startOfWeek.setHours(0, 0, 0, 0)
+
+    console.log("[v0] Loading weekly points from:", startOfWeek.toISOString())
 
     const { data: weeklyData } = await supabase
       .from("points_transactions")
@@ -102,11 +108,12 @@ export function FamilyPointsApp() {
       .gte("created_at", startOfWeek.toISOString())
 
     const weeklyTotal = weeklyData?.reduce((sum, t) => sum + t.points, 0) || 0
+    console.log("[v0] Weekly points calculated:", weeklyTotal, "from", weeklyData?.length, "transactions")
     setWeeklyPoints(Math.max(0, weeklyTotal))
 
     // Get current month's points
-    const startOfMonth = new Date()
-    startOfMonth.setDate(1)
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+    startOfMonth.setHours(0, 0, 0, 0)
 
     const { data: monthlyData } = await supabase
       .from("points_transactions")
@@ -148,21 +155,30 @@ export function FamilyPointsApp() {
 
     console.log("[v0] Awarding daily points for member:", selectedMember.name)
 
-    // Add points transaction
-    await supabase.from("points_transactions").insert({
+    const { error } = await supabase.from("points_transactions").insert({
       member_id: selectedMember.id,
       points: 15,
       reason: "Daily routine completed",
       transaction_type: "daily_award",
     })
 
+    if (error) {
+      console.error("[v0] Error adding daily points:", error)
+      return
+    }
+
     // Update or create daily progress
-    await supabase.from("daily_progress").upsert({
+    const { error: progressError } = await supabase.from("daily_progress").upsert({
       member_id: selectedMember.id,
       date: today,
       daily_points_awarded: true,
       rules_broken: {},
     })
+
+    if (progressError) {
+      console.error("[v0] Error updating daily progress:", progressError)
+      return
+    }
 
     await loadMemberData(selectedMember.id)
     console.log("[v0] Daily points awarded, data reloaded")
@@ -249,7 +265,7 @@ export function FamilyPointsApp() {
   }
 
   const progressPercentage = Math.min((weeklyPoints / 75) * 100, 100)
-  const chfEarned = weeklyPoints >= 75 ? 5 : Math.floor(weeklyPoints / 15) * 1
+  const chfEarned = Math.min(Math.floor(weeklyPoints / 15), 5) // Max 5 CHF, 1 CHF per 15 points
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
