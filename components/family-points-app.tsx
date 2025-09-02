@@ -43,7 +43,7 @@ interface OfflineTransaction {
 }
 
 const DAILY_RULES = [
-  { key: "dressed", label: "Getting dressed in the morning" },
+  { key: "organization", label: "Tidying up when an activity is finished" },
   { key: "bed", label: "Making the bed" },
   { key: "plate", label: "Bringing out plate after meals" },
   { key: "teeth", label: "Brushing teeth after breakfast and dinner" },
