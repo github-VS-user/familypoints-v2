@@ -63,6 +63,7 @@ const BONUS_ACTIVITIES = [
   { label: "Set the table", points: 5 },
   { label: "Hang out washing", points: 5 },
   { label: "Take out Emy", points: 15 },
+  { label: "General Help", points: 5 },
   { label: "Take out garbage", points: 5 },
   { label: "Clean rabbit area", points: 15 },
   { label: "Order drawers/closets", points: 15 },
