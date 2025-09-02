@@ -50,7 +50,7 @@ const DAILY_RULES = [
   { key: "shower", label: "Showering every other day and tidying bathrobe" },
   { key: "ipad", label: "Charging iPad and tidying folders" },
   { key: "pajamas", label: "Putting on pajamas" },
-  { key: "laundry", label: "Putting dirty laundry in hamper" },
+  { key: "laundry", label: "Putting dirty laundry in hamper or trash in the bin" },
   { key: "clothes", label: "Laying out clothes for next day" },
   { key: "bedtime", label: "Going to bed on time" },
   { key: "table_manners", label: "Good table manners" },
