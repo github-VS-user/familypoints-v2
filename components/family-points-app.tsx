@@ -53,7 +53,7 @@ const DAILY_RULES = [
   { key: "laundry", label: "Putting dirty laundry in hamper or trash in the bin" },
   { key: "clothes", label: "Laying out clothes for next day" },
   { key: "bedtime", label: "Going to bed on time" },
-  { key: "table_manners", label: "Good table manners" },
+  { key: "family&table_manners", label: "Good family & table manners" },
   { key: "parent", label: "Don't act like a parent" },
   { key: "interrupt", label: "Don't interrupt others" },
   { key: "repeat", label: "Don't make mom repeat things" },
