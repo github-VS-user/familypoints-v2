@@ -23,11 +23,16 @@ import {
   Flame,
   Undo2,
   Languages,
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
 import { translate, type Language } from "@/lib/translations"
 import { Spinner } from "@/components/ui/spinner"
+import { useRouter } from "next/navigation"
 
 interface FamilyMember {
   id: string
@@ -308,6 +313,7 @@ const DailyRoutineCard = React.memo(
 DailyRoutineCard.displayName = "DailyRoutineCard"
 
 export function FamilyPointsApp() {
+  const router = useRouter()
   const [selectedMember, setSelectedMember] = useState<FamilyMember | null>(null)
   const [members, setMembers] = useState<FamilyMember[]>([])
   const [weeklyPoints, setWeeklyPoints] = useState(0)
@@ -323,6 +329,7 @@ export function FamilyPointsApp() {
   const [clientError, setClientError] = useState<string | null>(null)
   const [language, setLanguage] = useState<Language>("en")
   const [lastAction, setLastAction] = useState<LastAction | null>(null)
+  const [historyExpanded, setHistoryExpanded] = useState(false)
   const { toast } = useToast()
 
   const touchStartX = useRef<number>(0)
@@ -381,7 +388,7 @@ export function FamilyPointsApp() {
           .delete()
           .eq("member_id", lastAction.memberId)
           .eq("reason", "Daily routine completed")
-          .eq("created_at", lastAction.progressData.date)
+          .gte("created_at", lastAction.progressData.date)
 
         if (transactionError) throw transactionError
       } else if (lastAction.type === "rule_broken" && lastAction.progressData) {
@@ -536,7 +543,7 @@ export function FamilyPointsApp() {
         .select("*")
         .eq("member_id", memberId)
         .order("created_at", { ascending: false })
-        .limit(10)
+        .limit(15)
 
       setRecentTransactions(transactionsData || [])
 
@@ -643,7 +650,7 @@ export function FamilyPointsApp() {
     }
 
     try {
-      const { error } = await supabaseClient
+      const { data, error } = await supabaseClient
         .from("points_transactions")
         .insert({
           member_id: transaction.member_id,
@@ -651,14 +658,14 @@ export function FamilyPointsApp() {
           reason: transaction.reason,
           transaction_type: transaction.transaction_type,
         })
-        .select("id") // Select the ID of the inserted transaction
+        .select("id")
+        .single()
 
       if (error) {
         console.error("[v0] Error adding transaction:", error)
         return false
       }
 
-      // Store last action for undo if it's a simple transaction
       if (
         transaction.transaction_type === "bonus_activity" ||
         transaction.transaction_type === "school_reward" ||
@@ -666,7 +673,7 @@ export function FamilyPointsApp() {
       ) {
         setLastAction({
           type: "transaction",
-          transactionId: error ? undefined : arguments[0]?.id || Date.now().toString(), // Use a temporary ID if DB insert fails but offline logic proceeds
+          transactionId: data?.id,
           memberId: transaction.member_id,
           points: transaction.points,
           reason: transaction.reason,
@@ -734,7 +741,7 @@ export function FamilyPointsApp() {
 
     toast({
       title: translate("dailyPointsAwarded", language),
-      description: selectedMember.name,
+      description: `+15 ${translate("pointsAdded", language, { points: "15" })}`,
     })
 
     if (isOnline) {
@@ -753,7 +760,7 @@ export function FamilyPointsApp() {
     const success = await addTransactionOfflineSupport({
       member_id: selectedMember.id,
       points: -1,
-      reason: `Rule broken: ${DAILY_RULES.find((r) => r.key === ruleKey)?.label}`,
+      reason: `Rule broken: ${translate(`rules.${ruleKey}`, language)}`,
       transaction_type: "rule_broken",
     })
 
@@ -846,9 +853,7 @@ export function FamilyPointsApp() {
   const resetMemberPoints = async () => {
     if (!selectedMember) return
 
-    const confirmReset = window.confirm(
-      `Are you sure you want to reset ALL points and progress for ${selectedMember.name}? This cannot be undone.`,
-    )
+    const confirmReset = window.confirm(translate("resetConfirm", language).replace("{name}", selectedMember.name))
 
     if (!confirmReset) return
 
@@ -923,7 +928,7 @@ export function FamilyPointsApp() {
             <Card className="shadow-lg border-red-200">
               <CardContent className="text-center py-8">
                 <p className="text-red-600 mb-4">{clientError}</p>
-                <Button onClick={() => window.location.reload()}>Retry</Button>
+                <Button onClick={() => window.location.reload()}>{translate("reset", language)}</Button>
               </CardContent>
             </Card>
           </div>
@@ -935,16 +940,14 @@ export function FamilyPointsApp() {
   if (!supabaseClient) {
     return (
       <ErrorBoundary>
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 flex items-center justify-center">
-          <div className="container mx-auto px-6 lg:px-8 max-w-md">
-            <Card className="shadow-lg border-blue-200">
-              <CardContent className="text-center py-12">
-                <Spinner className="h-12 w-12 mx-auto mb-4 text-blue-600" />
-                <p className="text-blue-600 text-lg font-medium">{translate("connectingToDatabase", language)}</p>
-                <p className="text-muted-foreground text-sm mt-2">Please wait...</p>
-              </CardContent>
-            </Card>
-          </div>
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 flex items-center justify-center p-4">
+          <Card className="shadow-lg border-blue-200 w-full max-w-md">
+            <CardContent className="text-center py-12">
+              <Spinner className="h-12 w-12 mx-auto mb-4 text-blue-600" />
+              <p className="text-blue-600 text-lg font-medium">{translate("connectingToDatabase", language)}</p>
+              <p className="text-muted-foreground text-sm mt-2">{translate("loading", language)}</p>
+            </CardContent>
+          </Card>
         </div>
       </ErrorBoundary>
     )
@@ -955,19 +958,30 @@ export function FamilyPointsApp() {
       <Toaster />
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-2 sm:py-4">
         <div className="container mx-auto px-3 sm:px-6 lg:px-8 max-w-4xl">
-          <div className="flex justify-between items-center mb-4">
-            <div className="text-center flex-1">
-              <h1 className="text-2xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
+          <div className="flex justify-between items-center mb-4 sm:mb-6">
+            <div className="flex-1">
+              {selectedMember ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelectedMember(null)}
+                  className="mb-2 -ml-2 hover:bg-blue-100"
+                >
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  {translate("backToHome", language)}
+                </Button>
+              ) : null}
+              <h1 className="text-2xl sm:text-4xl font-bold text-primary flex items-center gap-2">
                 <Star className="h-5 w-5 sm:h-8 sm:w-8" aria-hidden="true" />
                 {translate("title", language)}
               </h1>
-              <p className="text-muted-foreground text-xs sm:text-base">{translate("subtitle", language)}</p>
+              <p className="text-muted-foreground text-xs sm:text-base mt-1">{translate("subtitle", language)}</p>
             </div>
             <Button
               variant="outline"
               size="sm"
               onClick={toggleLanguage}
-              className="ml-2 bg-transparent"
+              className="ml-2 shrink-0 bg-white hover:bg-blue-50"
               aria-label="Toggle language"
             >
               <Languages className="h-4 w-4 mr-1" />
@@ -975,13 +989,13 @@ export function FamilyPointsApp() {
             </Button>
           </div>
 
-          {lastAction && selectedMember && (
+          {lastAction && (
             <div className="mb-4">
               <Button
                 variant="outline"
                 onClick={undoLastAction}
                 disabled={loading}
-                className="w-full border-orange-200 hover:bg-orange-50 text-orange-700 bg-transparent"
+                className="w-full border-orange-200 hover:bg-orange-50 text-orange-700 bg-white min-h-[48px] touch-manipulation"
               >
                 <Undo2 className="h-4 w-4 mr-2" />
                 {translate("undoLast", language)}
@@ -1020,40 +1034,33 @@ export function FamilyPointsApp() {
             </Card>
           )}
 
-          <div className="flex flex-col gap-2 sm:gap-4 mb-4 sm:mb-8" role="group" aria-label="Family member selection">
-            {members.map((member) => (
-              <div
-                key={member.id}
-                className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-center"
-              >
-                <Button
-                  variant={selectedMember?.id === member.id ? "default" : "outline"}
-                  size="lg"
-                  onClick={() => setSelectedMember(member)}
-                  className="text-sm sm:text-lg px-4 sm:px-8 py-3 sm:py-4 min-h-[48px] touch-manipulation"
-                  onTouchStart={handleTouchStart}
-                  onTouchEnd={(e) => handleTouchEnd(e, () => setSelectedMember(member))}
-                  aria-pressed={selectedMember?.id === member.id}
-                  aria-label={`Select ${member.name}`}
-                >
-                  {member.name}
-                </Button>
-                {selectedMember?.id === member.id && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={resetMemberPoints}
-                    disabled={loading}
-                    className="text-red-600 border-red-200 hover:bg-red-50 bg-transparent min-h-[40px] touch-manipulation"
-                    aria-label={`${translate("reset", language)} ${member.name}`}
+          {!selectedMember && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-6" role="group">
+                {members.map((member) => (
+                  <Card
+                    key={member.id}
+                    className="cursor-pointer hover:shadow-xl transition-all border-2 border-blue-200 hover:border-blue-400 bg-white"
+                    onClick={() => setSelectedMember(member)}
                   >
-                    <RotateCcw className="h-4 w-4 mr-1" aria-hidden="true" />
-                    {translate("reset", language)}
-                  </Button>
-                )}
+                    <CardContent className="text-center py-8 sm:py-12">
+                      <div className="text-4xl sm:text-6xl mb-3">{member.name === "Dario" ? "👦" : "👧"}</div>
+                      <h3 className="text-xl sm:text-2xl font-bold text-primary">{member.name}</h3>
+                      <p className="text-sm text-muted-foreground mt-2">{translate("selectMemberDesc", language)}</p>
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
-            ))}
-          </div>
+
+              <Card className="shadow-lg border-blue-200 bg-white">
+                <CardContent className="text-center py-8 sm:py-12">
+                  <Star className="h-12 w-12 text-blue-300 mx-auto mb-4" aria-hidden="true" />
+                  <h3 className="text-lg font-semibold mb-2">{translate("selectMember", language)}</h3>
+                  <p className="text-muted-foreground">{translate("selectMemberDesc", language)}</p>
+                </CardContent>
+              </Card>
+            </>
+          )}
 
           {selectedMember && (
             <div className="space-y-3 sm:space-y-6">
@@ -1077,7 +1084,7 @@ export function FamilyPointsApp() {
                 lang={language}
               />
 
-              <Card className="shadow-lg border-blue-200">
+              <Card className="shadow-lg border-blue-200 bg-white">
                 <CardHeader className="pb-3 sm:pb-4">
                   <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
                     <Plus className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
@@ -1088,7 +1095,7 @@ export function FamilyPointsApp() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-1 gap-2" role="list" aria-label="Bonus activities">
+                  <div className="grid grid-cols-1 gap-2" role="list">
                     {BONUS_ACTIVITIES.map((activity, index) => (
                       <Button
                         key={index}
@@ -1106,7 +1113,6 @@ export function FamilyPointsApp() {
                           )
                         }
                         role="listitem"
-                        aria-label={`${translate(`bonusActivities.${activity.key}`, language)} - earn ${activity.points} points`}
                       >
                         <span className="text-left flex-1 text-xs sm:text-sm">
                           {translate(`bonusActivities.${activity.key}`, language)}
@@ -1120,7 +1126,7 @@ export function FamilyPointsApp() {
                 </CardContent>
               </Card>
 
-              <Card className="shadow-lg border-blue-200">
+              <Card className="shadow-lg border-blue-200 bg-white">
                 <CardHeader className="pb-3 sm:pb-4">
                   <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
                     <BookOpen className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
@@ -1132,7 +1138,6 @@ export function FamilyPointsApp() {
                     variant="outline"
                     onClick={() => addSchoolReward(75, translate("school.monthlyAvg", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                    aria-label={`${translate("school.monthlyAvg", language)} - earn 75 points`}
                   >
                     <span className="text-xs sm:text-sm">{translate("school.monthlyAvg", language)}</span>
                     <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
@@ -1143,7 +1148,6 @@ export function FamilyPointsApp() {
                     variant="outline"
                     onClick={() => addSchoolReward(150, translate("school.allSubjects", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                    aria-label={`${translate("school.allSubjects", language)} - earn 150 points`}
                   >
                     <span className="text-xs sm:text-sm">{translate("school.allSubjects", language)}</span>
                     <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
@@ -1154,7 +1158,6 @@ export function FamilyPointsApp() {
                     variant="destructive"
                     onClick={() => addSchoolReward(-75, translate("school.belowMin", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto min-h-[48px] touch-manipulation"
-                    aria-label={`${translate("school.belowMin", language)} - lose 75 points`}
                   >
                     <span className="text-xs sm:text-sm">{translate("school.belowMin", language)}</span>
                     <Badge variant="destructive" className="text-xs">
@@ -1164,53 +1167,86 @@ export function FamilyPointsApp() {
                 </CardContent>
               </Card>
 
-              <Card className="shadow-lg border-blue-200">
+              <Card className="shadow-lg border-blue-200 bg-white">
                 <CardHeader className="pb-3 sm:pb-4">
-                  <CardTitle className="text-base sm:text-xl">{translate("recentActivity", language)}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2" role="list" aria-label="Recent point transactions">
-                    {recentTransactions.map((transaction) => (
-                      <div
-                        key={transaction.id}
-                        className="flex justify-between items-center p-2 sm:p-3 rounded-lg bg-blue-50/50 border border-blue-100"
-                        role="listitem"
-                      >
-                        <div className="flex-1">
-                          <div className="text-xs sm:text-sm font-medium">{transaction.reason}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {new Date(transaction.created_at).toLocaleDateString()}
-                          </div>
-                        </div>
-                        <Badge
-                          variant={transaction.points > 0 ? "secondary" : "destructive"}
-                          className={`text-xs ${transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}`}
-                          aria-label={`${transaction.points > 0 ? "Gained" : "Lost"} ${Math.abs(transaction.points)} points`}
-                        >
-                          {transaction.points > 0 ? "+" : ""}
-                          {transaction.points}
-                        </Badge>
-                      </div>
-                    ))}
-                    {recentTransactions.length === 0 && (
-                      <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">
-                        {translate("noRecentActivity", language)}
-                      </p>
-                    )}
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="text-base sm:text-xl">{translate("history", language)}</CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setHistoryExpanded(!historyExpanded)}
+                      className="hover:bg-blue-50"
+                    >
+                      {historyExpanded ? (
+                        <>
+                          <ChevronUp className="h-4 w-4 mr-1" />
+                          {translate("hideHistory", language)}
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="h-4 w-4 mr-1" />
+                          {translate("showHistory", language)}
+                        </>
+                      )}
+                    </Button>
                   </div>
-                </CardContent>
+                </CardHeader>
+                {historyExpanded && (
+                  <CardContent>
+                    <div className="space-y-2 mb-4" role="list">
+                      {recentTransactions.map((transaction) => (
+                        <div
+                          key={transaction.id}
+                          className="flex justify-between items-center p-2 sm:p-3 rounded-lg bg-blue-50/50 border border-blue-100"
+                          role="listitem"
+                        >
+                          <div className="flex-1">
+                            <div className="text-xs sm:text-sm font-medium">{transaction.reason}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {new Date(transaction.created_at).toLocaleDateString(
+                                language === "fr" ? "fr-FR" : language === "it" ? "it-IT" : "en-US",
+                              )}
+                            </div>
+                          </div>
+                          <Badge
+                            variant={transaction.points > 0 ? "secondary" : "destructive"}
+                            className={`text-xs ${transaction.points > 0 ? "bg-blue-100 text-blue-800" : ""}`}
+                          >
+                            {transaction.points > 0 ? "+" : ""}
+                            {transaction.points}
+                          </Badge>
+                        </div>
+                      ))}
+                      {recentTransactions.length === 0 && (
+                        <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">
+                          {translate("noRecentActivity", language)}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => router.push(`/history/${selectedMember.id}`)}
+                      className="w-full border-blue-200 hover:bg-blue-50"
+                    >
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      {translate("viewFullHistory", language)}
+                    </Button>
+                  </CardContent>
+                )}
               </Card>
-            </div>
-          )}
 
-          {!selectedMember && (
-            <Card className="shadow-lg border-blue-200">
-              <CardContent className="text-center py-8 sm:py-12">
-                <Star className="h-12 w-12 text-blue-300 mx-auto mb-4" aria-hidden="true" />
-                <h3 className="text-lg font-semibold mb-2">{translate("selectMember", language)}</h3>
-                <p className="text-muted-foreground">{translate("selectMemberDesc", language)}</p>
-              </CardContent>
-            </Card>
+              <div className="pb-4">
+                <Button
+                  variant="outline"
+                  onClick={resetMemberPoints}
+                  disabled={loading}
+                  className="w-full text-red-600 border-red-200 hover:bg-red-50 bg-white min-h-[48px] touch-manipulation"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  {translate("reset", language)} {selectedMember.name}
+                </Button>
+              </div>
+            </div>
           )}
         </div>
       </div>
