@@ -33,6 +33,7 @@ import { Toaster } from "@/components/ui/toaster"
 import { translate, type Language } from "@/lib/translations"
 import { Spinner } from "@/components/ui/spinner"
 import { useRouter } from "next/navigation"
+import Image from "next/image"
 
 interface FamilyMember {
   id: string
@@ -1044,7 +1045,15 @@ export function FamilyPointsApp() {
                     onClick={() => setSelectedMember(member)}
                   >
                     <CardContent className="text-center py-8 sm:py-12">
-                      <div className="text-4xl sm:text-6xl mb-3">{member.name === "Dario" ? "👦" : "👧"}</div>
+                      <div className="relative w-24 h-24 sm:w-32 sm:h-32 mx-auto mb-4">
+                        <Image
+                          src={member.name === "Dario" ? "/images/dario.png" : "/images/linda.png"}
+                          alt={`${member.name}'s profile`}
+                          fill
+                          className="rounded-full object-cover border-4 border-blue-200 shadow-lg"
+                          priority
+                        />
+                      </div>
                       <h3 className="text-xl sm:text-2xl font-bold text-primary">{member.name}</h3>
                       <p className="text-sm text-muted-foreground mt-2">{translate("selectMemberDesc", language)}</p>
                     </CardContent>
