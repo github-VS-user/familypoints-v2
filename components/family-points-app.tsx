@@ -10,7 +10,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Star, Award, BookOpen, Home, Minus, Plus, RotateCcw, Wifi, WifiOff, Flame } from "lucide-react"
+import {
+  Star,
+  Award,
+  BookOpen,
+  Home,
+  Minus,
+  Plus,
+  RotateCcw,
+  Wifi,
+  WifiOff,
+  Flame,
+  Undo2,
+  Languages,
+} from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { Toaster } from "@/components/ui/toaster"
+import { translate, type Language } from "@/lib/translations"
+import { Spinner } from "@/components/ui/spinner"
 
 interface FamilyMember {
   id: string
@@ -42,6 +59,15 @@ interface OfflineTransaction {
   timestamp: number
 }
 
+interface LastAction {
+  type: "transaction" | "daily_award" | "rule_broken"
+  transactionId?: string
+  memberId: string
+  points: number
+  reason: string
+  progressData?: DailyProgress
+}
+
 const DAILY_RULES = [
   { key: "organization", label: "Tidying up when an activity is finished" },
   { key: "bed", label: "Making the bed" },
@@ -60,14 +86,14 @@ const DAILY_RULES = [
 ] as const
 
 const BONUS_ACTIVITIES = [
-  { label: "Set the table", points: 5 },
-  { label: "Hang out washing", points: 5 },
-  { label: "Take out Emy", points: 15 },
-  { label: "General Help", points: 5 },
-  { label: "Take out garbage", points: 5 },
-  { label: "Clean rabbit area", points: 15 },
-  { label: "Order drawers/closets", points: 15 },
-  { label: "General cleaning", points: 15 },
+  { key: "setTable", label: "Set the table", points: 5 },
+  { key: "hangWashing", label: "Hang out washing", points: 5 },
+  { key: "takeOutEmy", label: "Take out Emy", points: 15 },
+  { key: "generalHelp", label: "General Help", points: 5 },
+  { key: "takeOutGarbage", label: "Take out garbage", points: 5 },
+  { key: "cleanRabbit", label: "Clean rabbit area", points: 15 },
+  { key: "orderDrawers", label: "Order drawers/closets", points: 15 },
+  { key: "generalCleaning", label: "General cleaning", points: 15 },
 ] as const
 
 class ErrorBoundary extends React.Component<{ children: ReactNode; fallback?: ReactNode }, { hasError: boolean }> {
@@ -107,11 +133,13 @@ const ProgressCard = React.memo(
     weeklyPoints,
     monthlyPoints,
     streakCount,
+    lang,
   }: {
     selectedMember: FamilyMember
     weeklyPoints: number
     monthlyPoints: number
     streakCount: number
+    lang: Language
   }) => {
     const progressPercentage = useMemo(() => Math.min((weeklyPoints / 75) * 100, 100), [weeklyPoints])
     const chfEarned = useMemo(() => Math.min(Math.floor(weeklyPoints / 15), 5), [weeklyPoints])
@@ -121,11 +149,15 @@ const ProgressCard = React.memo(
         <CardHeader className="pb-3 sm:pb-4">
           <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
             <Award className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
-            <span>{selectedMember.name}'s Progress</span>
+            <span>
+              {selectedMember.name}'s {translate("progress", lang)}
+            </span>
             {streakCount > 0 && (
               <Badge variant="secondary" className="bg-orange-100 text-orange-800 ml-2">
                 <Flame className="h-3 w-3 mr-1" aria-hidden="true" />
-                <span>{streakCount} day streak</span>
+                <span>
+                  {streakCount} {translate("dayStreak", lang)}
+                </span>
               </Badge>
             )}
           </CardTitle>
@@ -133,7 +165,7 @@ const ProgressCard = React.memo(
         <CardContent className="space-y-3 sm:space-y-4">
           <div>
             <div className="flex justify-between items-center mb-2">
-              <span className="text-xs sm:text-sm font-medium">Weekly Progress</span>
+              <span className="text-xs sm:text-sm font-medium">{translate("weeklyProgress", lang)}</span>
               <span
                 className="text-xs sm:text-sm text-muted-foreground"
                 aria-label={`${weeklyPoints} out of 75 points`}
@@ -153,7 +185,7 @@ const ProgressCard = React.memo(
               <div className="text-lg sm:text-2xl font-bold text-primary" aria-label={`${weeklyPoints} weekly points`}>
                 {weeklyPoints}
               </div>
-              <div className="text-xs sm:text-sm text-muted-foreground">Weekly</div>
+              <div className="text-xs sm:text-sm text-muted-foreground">{translate("weekly", lang)}</div>
             </div>
             <div className="p-2 sm:p-3 bg-cyan-50 rounded-lg">
               <div
@@ -162,19 +194,19 @@ const ProgressCard = React.memo(
               >
                 {monthlyPoints}
               </div>
-              <div className="text-xs sm:text-sm text-muted-foreground">Monthly</div>
+              <div className="text-xs sm:text-sm text-muted-foreground">{translate("monthly", lang)}</div>
             </div>
             <div className="p-2 sm:p-3 bg-blue-100 rounded-lg">
               <div className="text-lg sm:text-2xl font-bold text-accent" aria-label={`${chfEarned} CHF earned`}>
                 CHF {chfEarned}
               </div>
-              <div className="text-xs sm:text-sm text-muted-foreground">Earned</div>
+              <div className="text-xs sm:text-sm text-muted-foreground">{translate("earned", lang)}</div>
             </div>
           </div>
 
           {weeklyPoints >= 75 && (
             <Badge variant="secondary" className="w-full justify-center bg-blue-100 text-blue-800 py-2" role="status">
-              🎉 Maximum weekly points reached!
+              🎉 {translate("maxReached", lang)}
             </Badge>
           )}
         </CardContent>
@@ -195,6 +227,7 @@ const DailyRoutineCard = React.memo(
     swipeDirection,
     onTouchStart,
     onTouchEnd,
+    lang,
   }: {
     selectedMember: FamilyMember
     todayProgress: DailyProgress | null
@@ -204,15 +237,16 @@ const DailyRoutineCard = React.memo(
     swipeDirection: string
     onTouchStart: (e: React.TouchEvent) => void
     onTouchEnd: (e: React.TouchEvent, action: () => void) => void
+    lang: Language
   }) => {
     return (
       <Card className="shadow-lg border-blue-200">
         <CardHeader className="pb-3 sm:pb-4">
           <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
             <Home className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
-            Daily Routine
+            {translate("dailyRoutine", lang)}
           </CardTitle>
-          <CardDescription className="text-xs sm:text-sm">Complete your daily tasks to earn 15 points</CardDescription>
+          <CardDescription className="text-xs sm:text-sm">{translate("dailyRoutineDesc", lang)}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 sm:space-y-4">
           <Button
@@ -222,13 +256,17 @@ const DailyRoutineCard = React.memo(
             size="lg"
             onTouchStart={onTouchStart}
             onTouchEnd={(e) => onTouchEnd(e, onAwardDailyPoints)}
-            aria-label={todayProgress?.daily_points_awarded ? "Daily points already awarded" : "Award 15 daily points"}
+            aria-label={
+              todayProgress?.daily_points_awarded
+                ? translate("dailyPointsAwarded", lang)
+                : translate("awardDailyPoints", lang)
+            }
           >
             {loading
-              ? "Loading..."
+              ? translate("loading", lang)
               : todayProgress?.daily_points_awarded
-                ? "Daily Points Awarded ✓"
-                : "Award Daily Points (+15)"}
+                ? translate("dailyPointsAwarded", lang)
+                : translate("awardDailyPoints", lang)}
           </Button>
 
           <Separator />
@@ -244,18 +282,18 @@ const DailyRoutineCard = React.memo(
                 onTouchEnd={(e) => onTouchEnd(e, () => onBreakRule(rule.key))}
                 role="listitem"
               >
-                <span className="text-xs sm:text-sm flex-1 pr-2">{rule.label}</span>
+                <span className="text-xs sm:text-sm flex-1 pr-2">{translate(`rules.${rule.key}`, lang)}</span>
                 <Button
                   variant="destructive"
                   size="sm"
                   onClick={() => onBreakRule(rule.key)}
                   disabled={!todayProgress?.daily_points_awarded || todayProgress?.rules_broken?.[rule.key]}
                   className="shrink-0 min-h-[36px] touch-manipulation"
-                  aria-label={`${rule.label} - ${todayProgress?.rules_broken?.[rule.key] ? "Already broken" : "Deduct 1 point"}`}
+                  aria-label={`${translate(`rules.${rule.key}`, lang)} - ${todayProgress?.rules_broken?.[rule.key] ? translate("rules.broken", lang) : "-1"}`}
                 >
                   <Minus className="h-3 w-3 sm:h-4 sm:w-4" aria-hidden="true" />
                   <span className="ml-1 text-xs sm:text-sm">
-                    {todayProgress?.rules_broken?.[rule.key] ? "Broken" : "-1"}
+                    {todayProgress?.rules_broken?.[rule.key] ? translate("rules.broken", lang) : "-1"}
                   </span>
                 </Button>
               </div>
@@ -283,10 +321,100 @@ export function FamilyPointsApp() {
   const [error, setError] = useState<string | null>(null)
   const [supabaseClient, setSupabaseClient] = useState<any>(null)
   const [clientError, setClientError] = useState<string | null>(null)
+  const [language, setLanguage] = useState<Language>("en")
+  const [lastAction, setLastAction] = useState<LastAction | null>(null)
+  const { toast } = useToast()
 
   const touchStartX = useRef<number>(0)
   const touchStartY = useRef<number>(0)
   const [swipeDirection, setSwipeDirection] = useState<string>("")
+
+  useEffect(() => {
+    const savedLang = localStorage.getItem("familyPointsLanguage") as Language
+    if (savedLang && ["en", "fr", "it"].includes(savedLang)) {
+      setLanguage(savedLang)
+    }
+  }, [])
+
+  const toggleLanguage = useCallback(() => {
+    const languages: Language[] = ["en", "fr", "it"]
+    const currentIndex = languages.indexOf(language)
+    const nextLanguage = languages[(currentIndex + 1) % languages.length]
+    setLanguage(nextLanguage)
+    localStorage.setItem("familyPointsLanguage", nextLanguage)
+    toast({
+      title: translate("title", nextLanguage),
+      description: `Language changed to ${nextLanguage.toUpperCase()}`,
+    })
+  }, [language, toast])
+
+  const undoLastAction = useCallback(async () => {
+    if (!lastAction || !supabaseClient) {
+      toast({
+        title: translate("cannotUndo", language),
+        variant: "destructive",
+      })
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      if (lastAction.type === "transaction" && lastAction.transactionId) {
+        // Delete the transaction
+        const { error } = await supabaseClient.from("points_transactions").delete().eq("id", lastAction.transactionId)
+
+        if (error) throw error
+      } else if (lastAction.type === "daily_award" && lastAction.progressData) {
+        // Revert daily progress
+        const { error: progressError } = await supabaseClient
+          .from("daily_progress")
+          .delete()
+          .eq("member_id", lastAction.memberId)
+          .eq("date", lastAction.progressData.date)
+
+        if (progressError) throw progressError
+
+        // Delete the transaction
+        const { error: transactionError } = await supabaseClient
+          .from("points_transactions")
+          .delete()
+          .eq("member_id", lastAction.memberId)
+          .eq("reason", "Daily routine completed")
+          .eq("created_at", lastAction.progressData.date)
+
+        if (transactionError) throw transactionError
+      } else if (lastAction.type === "rule_broken" && lastAction.progressData) {
+        // Restore the progress state
+        const { error } = await supabaseClient
+          .from("daily_progress")
+          .update({ rules_broken: lastAction.progressData.rules_broken })
+          .eq("member_id", lastAction.memberId)
+          .eq("date", lastAction.progressData.date)
+
+        if (error) throw error
+      }
+
+      setLastAction(null)
+
+      if (selectedMember) {
+        await loadMemberData(selectedMember.id)
+      }
+
+      toast({
+        title: translate("actionUndone", language),
+        description: `${lastAction.points > 0 ? "+" : ""}${lastAction.points} points`,
+      })
+    } catch (error) {
+      console.error("[v0] Error undoing action:", error)
+      toast({
+        title: translate("cannotUndo", language),
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }, [lastAction, supabaseClient, selectedMember, language, toast])
 
   const withErrorHandling = useCallback(async (operation: () => Promise<void>, errorMessage: string) => {
     try {
@@ -515,16 +643,34 @@ export function FamilyPointsApp() {
     }
 
     try {
-      const { error } = await supabaseClient.from("points_transactions").insert({
-        member_id: transaction.member_id,
-        points: transaction.points,
-        reason: transaction.reason,
-        transaction_type: transaction.transaction_type,
-      })
+      const { error } = await supabaseClient
+        .from("points_transactions")
+        .insert({
+          member_id: transaction.member_id,
+          points: transaction.points,
+          reason: transaction.reason,
+          transaction_type: transaction.transaction_type,
+        })
+        .select("id") // Select the ID of the inserted transaction
 
       if (error) {
         console.error("[v0] Error adding transaction:", error)
         return false
+      }
+
+      // Store last action for undo if it's a simple transaction
+      if (
+        transaction.transaction_type === "bonus_activity" ||
+        transaction.transaction_type === "school_reward" ||
+        transaction.transaction_type === "school_penalty"
+      ) {
+        setLastAction({
+          type: "transaction",
+          transactionId: error ? undefined : arguments[0]?.id || Date.now().toString(), // Use a temporary ID if DB insert fails but offline logic proceeds
+          memberId: transaction.member_id,
+          points: transaction.points,
+          reason: transaction.reason,
+        })
       }
 
       return true
@@ -562,6 +708,20 @@ export function FamilyPointsApp() {
         console.error("[v0] Error updating daily progress:", progressError)
         return
       }
+
+      setLastAction({
+        type: "daily_award",
+        memberId: selectedMember.id,
+        points: 15,
+        reason: "Daily routine completed",
+        progressData: {
+          id: "temp",
+          member_id: selectedMember.id,
+          date: today,
+          daily_points_awarded: false,
+          rules_broken: {},
+        },
+      })
     } else {
       setTodayProgress({
         id: "offline",
@@ -571,6 +731,11 @@ export function FamilyPointsApp() {
         rules_broken: {},
       })
     }
+
+    toast({
+      title: translate("dailyPointsAwarded", language),
+      description: selectedMember.name,
+    })
 
     if (isOnline) {
       await loadMemberData(selectedMember.id)
@@ -582,6 +747,7 @@ export function FamilyPointsApp() {
     if (!selectedMember || !todayProgress?.daily_points_awarded) return
 
     const today = new Date().toISOString().split("T")[0]
+    const previousRulesBroken = { ...todayProgress.rules_broken }
     const newRulesBroken = { ...todayProgress.rules_broken, [ruleKey]: true }
 
     const success = await addTransactionOfflineSupport({
@@ -600,12 +766,29 @@ export function FamilyPointsApp() {
         daily_points_awarded: todayProgress.daily_points_awarded,
         rules_broken: newRulesBroken,
       })
+
+      setLastAction({
+        type: "rule_broken",
+        memberId: selectedMember.id,
+        points: -1,
+        reason: `Rule broken: ${ruleKey}`,
+        progressData: {
+          ...todayProgress,
+          rules_broken: previousRulesBroken,
+        },
+      })
     } else {
       setTodayProgress({
         ...todayProgress,
         rules_broken: newRulesBroken,
       })
     }
+
+    toast({
+      title: translate("pointsDeducted", language, { points: "1" }),
+      description: translate(`rules.${ruleKey}`, language),
+      variant: "destructive",
+    })
 
     if (isOnline) {
       loadMemberData(selectedMember.id)
@@ -622,8 +805,15 @@ export function FamilyPointsApp() {
       transaction_type: "bonus_activity",
     })
 
-    if (success && isOnline) {
-      loadMemberData(selectedMember.id)
+    if (success) {
+      toast({
+        title: translate("pointsAdded", language, { points: points.toString() }),
+        description: activity,
+      })
+
+      if (isOnline) {
+        loadMemberData(selectedMember.id)
+      }
     }
   }
 
@@ -637,8 +827,19 @@ export function FamilyPointsApp() {
       transaction_type: points > 0 ? "school_reward" : "school_penalty",
     })
 
-    if (success && isOnline) {
-      loadMemberData(selectedMember.id)
+    if (success) {
+      toast({
+        title:
+          points > 0
+            ? translate("pointsAdded", language, { points: points.toString() })
+            : translate("pointsDeducted", language, { points: Math.abs(points).toString() }),
+        description: reason,
+        variant: points < 0 ? "destructive" : "default",
+      })
+
+      if (isOnline) {
+        loadMemberData(selectedMember.id)
+      }
     }
   }
 
@@ -654,13 +855,30 @@ export function FamilyPointsApp() {
     setLoading(true)
 
     try {
+      // Record the reset action for potential undo (though complex, we'll just log it for now)
+      const resetReason = `Reset all points and progress for ${selectedMember.name}`
+      setLastAction({
+        type: "transaction", // Or a more specific 'reset' type if needed
+        memberId: selectedMember.id,
+        points: 0, // Or track the total points before reset if possible
+        reason: resetReason,
+      })
+
       await supabaseClient.from("points_transactions").delete().eq("member_id", selectedMember.id)
       await supabaseClient.from("daily_progress").delete().eq("member_id", selectedMember.id)
       await loadMemberData(selectedMember.id)
 
       console.log("[v0] Successfully reset all data for", selectedMember.name)
+      toast({
+        title: translate("resetSuccess", language),
+        description: selectedMember.name,
+      })
     } catch (error) {
       console.error("[v0] Error resetting member data:", error)
+      toast({
+        title: translate("resetFailed", language),
+        variant: "destructive",
+      })
     } finally {
       setLoading(false)
     }
@@ -700,7 +918,7 @@ export function FamilyPointsApp() {
   if (clientError) {
     return (
       <ErrorBoundary>
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4 flex items-center justify-center">
           <div className="container mx-auto px-6 lg:px-8 max-w-4xl">
             <Card className="shadow-lg border-red-200">
               <CardContent className="text-center py-8">
@@ -717,11 +935,13 @@ export function FamilyPointsApp() {
   if (!supabaseClient) {
     return (
       <ErrorBoundary>
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-4">
-          <div className="container mx-auto px-6 lg:px-8 max-w-4xl">
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 flex items-center justify-center">
+          <div className="container mx-auto px-6 lg:px-8 max-w-md">
             <Card className="shadow-lg border-blue-200">
-              <CardContent className="text-center py-8">
-                <p className="text-blue-600">Connecting to database...</p>
+              <CardContent className="text-center py-12">
+                <Spinner className="h-12 w-12 mx-auto mb-4 text-blue-600" />
+                <p className="text-blue-600 text-lg font-medium">{translate("connectingToDatabase", language)}</p>
+                <p className="text-muted-foreground text-sm mt-2">Please wait...</p>
               </CardContent>
             </Card>
           </div>
@@ -732,33 +952,61 @@ export function FamilyPointsApp() {
 
   return (
     <ErrorBoundary>
+      <Toaster />
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-50 py-2 sm:py-4">
         <div className="container mx-auto px-3 sm:px-6 lg:px-8 max-w-4xl">
           <div className="flex justify-between items-center mb-4">
             <div className="text-center flex-1">
               <h1 className="text-2xl sm:text-4xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
                 <Star className="h-5 w-5 sm:h-8 sm:w-8" aria-hidden="true" />
-                Family Points
+                {translate("title", language)}
               </h1>
-              <p className="text-muted-foreground text-xs sm:text-base">Track daily routines and earn rewards!</p>
+              <p className="text-muted-foreground text-xs sm:text-base">{translate("subtitle", language)}</p>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={toggleLanguage}
+              className="ml-2 bg-transparent"
+              aria-label="Toggle language"
+            >
+              <Languages className="h-4 w-4 mr-1" />
+              {language.toUpperCase()}
+            </Button>
+          </div>
+
+          {lastAction && selectedMember && (
+            <div className="mb-4">
+              <Button
+                variant="outline"
+                onClick={undoLastAction}
+                disabled={loading}
+                className="w-full border-orange-200 hover:bg-orange-50 text-orange-700 bg-transparent"
+              >
+                <Undo2 className="h-4 w-4 mr-2" />
+                {translate("undoLast", language)}
+              </Button>
+            </div>
+          )}
+
+          <div className="flex justify-between items-center mb-4">
             <div
               className="flex items-center gap-2"
               role="status"
-              aria-label={`Connection status: ${isOnline ? "online" : "offline"}`}
+              aria-label={`Connection status: ${isOnline ? translate("online", language) : translate("offline", language)}`}
             >
               {isOnline ? (
-                <Wifi className="h-4 w-4 text-green-600" aria-label="Online" />
+                <Wifi className="h-4 w-4 text-green-600" aria-label={translate("online", language)} />
               ) : (
-                <WifiOff className="h-4 w-4 text-red-600" aria-label="Offline" />
+                <WifiOff className="h-4 w-4 text-red-600" aria-label={translate("offline", language)} />
               )}
               {offlineQueue.length > 0 && (
                 <Badge
                   variant="outline"
                   className="text-xs"
-                  aria-label={`${offlineQueue.length} transactions pending sync`}
+                  aria-label={`${offlineQueue.length} transactions ${translate("pending", language)}`}
                 >
-                  {offlineQueue.length} pending
+                  {offlineQueue.length} {translate("pending", language)}
                 </Badge>
               )}
             </div>
@@ -797,10 +1045,10 @@ export function FamilyPointsApp() {
                     onClick={resetMemberPoints}
                     disabled={loading}
                     className="text-red-600 border-red-200 hover:bg-red-50 bg-transparent min-h-[40px] touch-manipulation"
-                    aria-label={`Reset all points for ${member.name}`}
+                    aria-label={`${translate("reset", language)} ${member.name}`}
                   >
                     <RotateCcw className="h-4 w-4 mr-1" aria-hidden="true" />
-                    Reset
+                    {translate("reset", language)}
                   </Button>
                 )}
               </div>
@@ -814,6 +1062,7 @@ export function FamilyPointsApp() {
                 weeklyPoints={weeklyPoints}
                 monthlyPoints={monthlyPoints}
                 streakCount={streakCount}
+                lang={language}
               />
 
               <DailyRoutineCard
@@ -825,16 +1074,17 @@ export function FamilyPointsApp() {
                 swipeDirection={swipeDirection}
                 onTouchStart={handleTouchStart}
                 onTouchEnd={handleTouchEnd}
+                lang={language}
               />
 
               <Card className="shadow-lg border-blue-200">
                 <CardHeader className="pb-3 sm:pb-4">
                   <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
                     <Plus className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
-                    Bonus Activities
+                    {translate("bonusActivities", language)}
                   </CardTitle>
                   <CardDescription className="text-xs sm:text-sm">
-                    Earn extra points for helping around the house
+                    {translate("bonusActivitiesDesc", language)}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -843,16 +1093,24 @@ export function FamilyPointsApp() {
                       <Button
                         key={index}
                         variant="outline"
-                        onClick={() => addBonusPoints(activity.label, activity.points)}
+                        onClick={() =>
+                          addBonusPoints(translate(`bonusActivities.${activity.key}`, language), activity.points)
+                        }
                         className={`justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation transition-transform ${
                           swipeDirection === "right" ? "transform translate-x-2" : ""
                         }`}
                         onTouchStart={handleTouchStart}
-                        onTouchEnd={(e) => handleTouchEnd(e, () => addBonusPoints(activity.label, activity.points))}
+                        onTouchEnd={(e) =>
+                          handleTouchEnd(e, () =>
+                            addBonusPoints(translate(`bonusActivities.${activity.key}`, language), activity.points),
+                          )
+                        }
                         role="listitem"
-                        aria-label={`${activity.label} - earn ${activity.points} points`}
+                        aria-label={`${translate(`bonusActivities.${activity.key}`, language)} - earn ${activity.points} points`}
                       >
-                        <span className="text-left flex-1 text-xs sm:text-sm">{activity.label}</span>
+                        <span className="text-left flex-1 text-xs sm:text-sm">
+                          {translate(`bonusActivities.${activity.key}`, language)}
+                        </span>
                         <Badge variant="secondary" className="bg-blue-100 text-blue-800 ml-2 text-xs">
                           +{activity.points}
                         </Badge>
@@ -866,39 +1124,39 @@ export function FamilyPointsApp() {
                 <CardHeader className="pb-3 sm:pb-4">
                   <CardTitle className="flex items-center gap-2 text-base sm:text-xl">
                     <BookOpen className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
-                    School Performance
+                    {translate("schoolPerformance", language)}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <Button
                     variant="outline"
-                    onClick={() => addSchoolReward(75, "Monthly average ≥ 5")}
+                    onClick={() => addSchoolReward(75, translate("school.monthlyAvg", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                    aria-label="Monthly average greater than or equal to 5 - earn 75 points"
+                    aria-label={`${translate("school.monthlyAvg", language)} - earn 75 points`}
                   >
-                    <span className="text-xs sm:text-sm">Monthly average ≥ 5</span>
+                    <span className="text-xs sm:text-sm">{translate("school.monthlyAvg", language)}</span>
                     <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
                       +75
                     </Badge>
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() => addSchoolReward(150, "All subjects ≥ 5")}
+                    onClick={() => addSchoolReward(150, translate("school.allSubjects", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto border-blue-200 hover:bg-blue-50 min-h-[48px] touch-manipulation"
-                    aria-label="All subjects greater than or equal to 5 - earn 150 points"
+                    aria-label={`${translate("school.allSubjects", language)} - earn 150 points`}
                   >
-                    <span className="text-xs sm:text-sm">All subjects ≥ 5</span>
+                    <span className="text-xs sm:text-sm">{translate("school.allSubjects", language)}</span>
                     <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">
                       +150
                     </Badge>
                   </Button>
                   <Button
                     variant="destructive"
-                    onClick={() => addSchoolReward(-75, "Grade below minimum")}
+                    onClick={() => addSchoolReward(-75, translate("school.belowMin", language))}
                     className="w-full justify-between p-3 sm:p-4 h-auto min-h-[48px] touch-manipulation"
-                    aria-label="Grade below minimum - lose 75 points"
+                    aria-label={`${translate("school.belowMin", language)} - lose 75 points`}
                   >
-                    <span className="text-xs sm:text-sm">Grade below minimum</span>
+                    <span className="text-xs sm:text-sm">{translate("school.belowMin", language)}</span>
                     <Badge variant="destructive" className="text-xs">
                       -75
                     </Badge>
@@ -908,7 +1166,7 @@ export function FamilyPointsApp() {
 
               <Card className="shadow-lg border-blue-200">
                 <CardHeader className="pb-3 sm:pb-4">
-                  <CardTitle className="text-base sm:text-xl">Recent Activity</CardTitle>
+                  <CardTitle className="text-base sm:text-xl">{translate("recentActivity", language)}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2" role="list" aria-label="Recent point transactions">
@@ -935,7 +1193,9 @@ export function FamilyPointsApp() {
                       </div>
                     ))}
                     {recentTransactions.length === 0 && (
-                      <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">No recent activity</p>
+                      <p className="text-center text-muted-foreground py-4 text-xs sm:text-sm">
+                        {translate("noRecentActivity", language)}
+                      </p>
                     )}
                   </div>
                 </CardContent>
@@ -947,8 +1207,8 @@ export function FamilyPointsApp() {
             <Card className="shadow-lg border-blue-200">
               <CardContent className="text-center py-8 sm:py-12">
                 <Star className="h-12 w-12 text-blue-300 mx-auto mb-4" aria-hidden="true" />
-                <h3 className="text-lg font-semibold mb-2">Select a Family Member</h3>
-                <p className="text-muted-foreground">Choose Dario or Linda to start tracking points!</p>
+                <h3 className="text-lg font-semibold mb-2">{translate("selectMember", language)}</h3>
+                <p className="text-muted-foreground">{translate("selectMemberDesc", language)}</p>
               </CardContent>
             </Card>
           )}
