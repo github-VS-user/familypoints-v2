@@ -972,8 +972,11 @@ export function FamilyPointsApp() {
                   {translate("backToHome", language)}
                 </Button>
               ) : null}
-              <h1 className="text-2xl sm:text-4xl font-bold text-primary flex items-center gap-2">
-                <Star className="h-5 w-5 sm:h-8 sm:w-8" aria-hidden="true" />
+              <h1 className="text-2xl sm:text-4xl font-bold bg-gradient-to-r from-blue-600 via-cyan-600 to-blue-600 bg-clip-text text-transparent flex items-center gap-2 sm:gap-3">
+                <Star
+                  className="h-6 w-6 sm:h-10 sm:w-10 text-yellow-500 fill-yellow-400 drop-shadow-md"
+                  aria-hidden="true"
+                />
                 {translate("title", language)}
               </h1>
               <p className="text-muted-foreground text-xs sm:text-base mt-1">{translate("subtitle", language)}</p>
